@@ -40,9 +40,13 @@ set(
   release/
 )
 
+# --- CPack metadata (required for DEB) ---
 set(CPACK_VERBATIM_VARIABLES YES)
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-source")
 set(CPACK_ARCHIVE_THREADS 0)
+set(CPACK_PACKAGE_VENDOR "MML Tech")
+set(CPACK_PACKAGE_CONTACT "Marco Maxim <contact@streamrsc.com>")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Marco Maxim <contact@streamrsc.com>")
 
 include(CPack)
 
