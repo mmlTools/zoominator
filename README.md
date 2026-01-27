@@ -1,4 +1,4 @@
-# Zoominator – Smart Follow & Zoom for OBS Studio
+# Zoominator Smart Follow & Zoom for OBS Studio
 
 Zoominator is an OBS Studio plugin that lets a capture source smoothly follow the mouse and optionally zoom in, while always keeping the visible area fully covered. It’s built for tutorials, presentations, live coding, and gameplay analysis where the viewer’s attention should naturally track what’s happening on screen.
 
