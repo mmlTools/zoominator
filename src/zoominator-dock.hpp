@@ -1,6 +1,11 @@
 #pragma once
 #include <QWidget>
 
+// OBS frontend API (obs_frontend_event / obs_frontend_event_cb)
+extern "C" {
+#include <obs-frontend-api.h>
+}
+
 class QComboBox;
 class QPushButton;
 class QShowEvent;
@@ -24,7 +29,7 @@ private slots:
 private:
 	void buildUi();
 	void populateSources();
-	static void onFrontendEvent(enum obs_frontend_event event, void *private_data);
+	static void onFrontendEvent(obs_frontend_event event, void *private_data);
 
 	QComboBox *cmbSource = nullptr;
 	QPushButton *btnRefresh = nullptr;

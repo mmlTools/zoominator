@@ -48,7 +48,7 @@ void ZoominatorDock::showEvent(QShowEvent *event)
 	loadFromController();
 }
 
-void ZoominatorDock::onFrontendEvent(enum obs_frontend_event event, void *private_data)
+void ZoominatorDock::onFrontendEvent(obs_frontend_event event, void *private_data)
 {
 	auto *dock = reinterpret_cast<ZoominatorDock *>(private_data);
 	if (!dock)
@@ -70,6 +70,7 @@ void ZoominatorDock::onFrontendEvent(enum obs_frontend_event event, void *privat
 		break;
 	}
 }
+
 
 void ZoominatorDock::buildUi()
 {

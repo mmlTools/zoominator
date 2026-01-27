@@ -1005,6 +1005,9 @@ void ZoominatorController::onTriggerUp()
 
 static int qtKeyToVk(int qtKey)
 {
+#ifndef _WIN32
+	(void)qtKey;
+#endif
 #ifdef _WIN32
 	if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z)
 		return 'A' + (qtKey - Qt::Key_A);
