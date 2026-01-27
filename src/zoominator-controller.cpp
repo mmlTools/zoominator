@@ -684,6 +684,12 @@ void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
 	obs_sceneitem_get_crop(item, &orig.crop);
 	orig.valid = true;
 	obs_sceneitem_set_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+	// Ensure predictable transform math while Zoominator controls the item.
+	// Bounds scaling (Fit/Stretch) breaks clamping because the rendered size is no longer visW*scale.
+	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_NONE);
+	vec2 zb{};
+	zb.x = 0.0f; zb.y = 0.0f;
+	obs_sceneitem_set_bounds(item, &zb);
 }
 
 void ZoominatorController::restoreOriginal(obs_sceneitem_t *item)
@@ -778,7 +784,10 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 	const double ch = haveVi ? (double)ovi.base_height : 1080.0;
 
 	double cover = 1.0;
-	if (portraitCover && ch > cw) {
+	// "Cover" mode: scale the target so it always fully covers the OBS base canvas.
+	// This must apply regardless of canvas orientation (landscape/portrait); otherwise
+	// tracking/clamping can allow the capture to no longer cover the frame (corner leaks).
+	if (portraitCover) {
 		const double sx = cw / visW;
 		const double sy = ch / visH;
 		cover = (sx > sy) ? sx : sy;
