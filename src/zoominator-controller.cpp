@@ -20,6 +20,11 @@
 #include <Psapi.h>
 #endif
 
+#ifdef __APPLE__
+#include <ApplicationServices/ApplicationServices.h>
+#include <Carbon/Carbon.h>
+#endif
+
 #include "zoominator-dialog.hpp"
 #include "zoominator-dock.hpp"
 
@@ -1045,6 +1050,7 @@ static ZoominatorController *g_ctl = nullptr;
 
 static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantWin)
 {
+#if defined(_WIN32)
 	auto down = [](int vk) {
 		return (GetAsyncKeyState(vk) & 0x8000) != 0;
 	};
@@ -1052,6 +1058,20 @@ static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantW
 	const bool a = down(VK_MENU) || down(VK_LMENU) || down(VK_RMENU);
 	const bool s = down(VK_SHIFT) || down(VK_LSHIFT) || down(VK_RSHIFT);
 	const bool w = down(VK_LWIN) || down(VK_RWIN);
+#elif defined(__APPLE__)
+	// NOTE: On macOS, "Win" is mapped to the Command key.
+	auto down = [](int vk) {
+		return CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, (CGKeyCode)vk);
+	};
+	const bool c = down(kVK_Control) || down(kVK_RightControl);
+	const bool a = down(kVK_Option) || down(kVK_RightOption);
+	const bool s = down(kVK_Shift) || down(kVK_RightShift);
+	const bool w = down(kVK_Command) || down(kVK_RightCommand);
+#else
+	// Not implemented for this platform yet (Linux/X11/Wayland). Keep behavior safe: no modifier-only trigger.
+	const bool c = false, a = false, s = false, w = false;
+#endif
+
 	if (wantCtrl != c)
 		return false;
 	if (wantAlt != a)
@@ -1062,6 +1082,7 @@ static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantW
 		return false;
 	return true;
 }
+
 
 static inline bool is_modifier_vk(int vk)
 {
