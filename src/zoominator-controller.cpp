@@ -10,6 +10,7 @@
 #include <QRegularExpression>
 
 #include <cmath>
+#include <algorithm>
 
 #include <QFileInfo>
 
@@ -342,6 +343,10 @@ obs_sceneitem_t *ZoominatorController::findTargetItemInCurrentScene() const
 bool ZoominatorController::getCursorPos(int &x, int &y) const
 {
 #ifdef _WIN32
+	// Use logical cursor coordinates (GetCursorPos) to match the coordinate space
+	// returned by monitor/window rect APIs when the process is not explicitly DPI-aware.
+	// Using physical cursor coordinates can cause the cursor to appear "stuck" outside
+	// the capture rect on the right/bottom edges on mixed-DPI setups.
 	POINT p{};
 	if (!::GetCursorPos(&p))
 		return false;
@@ -362,22 +367,58 @@ static bool get_monitor_capture_selector(obs_source_t *src, QString &selector, i
 	monitorId = -1;
 	hasId = false;
 
+	if (!src)
+		return false;
+
 	obs_data_t *s = obs_source_get_settings(src);
 	if (!s)
 		return false;
 
-	const char *m = obs_data_get_string(s, "monitor");
-	if (m && *m)
-		selector = QString::fromUtf8(m);
+	// IMPORTANT:
+	// Do NOT use obs_data_has_user_value() here. Some capture sources (notably duplicator-monitor-capture)
+	// provide monitor identifiers as non-user values, but obs_data_get_string() still returns them.
+	auto pick_str = [&](const char *key) -> const char * {
+		const char *v = obs_data_get_string(s, key);
+		return (v && *v) ? v : nullptr;
+	};
 
+	// Prefer stable device identifiers
+	if (const char *v = pick_str("alt_id"))
+		selector = QString::fromUtf8(v);
+	else if (const char *v = pick_str("monitor_device"))
+		selector = QString::fromUtf8(v);
+	else if (const char *v = pick_str("display_device"))
+		selector = QString::fromUtf8(v);
+	else if (const char *v = pick_str("device"))
+		selector = QString::fromUtf8(v);
+	else if (const char *v = pick_str("monitor"))
+		selector = QString::fromUtf8(v);
+	else if (const char *v = pick_str("monitor_id"))
+		selector = QString::fromUtf8(v);
+	else if (const char *v = pick_str("id"))
+		selector = QString::fromUtf8(v);
+	else if (const char *v = pick_str("setting_id"))
+		selector = QString::fromUtf8(v);
+
+	// If we still have no selector, try numeric IDs as a last resort.
 	if (selector.isEmpty()) {
 		monitorId = (int)obs_data_get_int(s, "monitor_id");
-		if (monitorId != 0 || obs_data_has_user_value(s, "monitor_id"))
+		if (monitorId != 0)
 			hasId = true;
 
 		if (!hasId) {
 			monitorId = (int)obs_data_get_int(s, "monitor");
-			if (monitorId != 0 || obs_data_has_user_value(s, "monitor"))
+			if (monitorId != 0)
+				hasId = true;
+		}
+		if (!hasId) {
+			monitorId = (int)obs_data_get_int(s, "display");
+			if (monitorId != 0)
+				hasId = true;
+		}
+		if (!hasId) {
+			monitorId = (int)obs_data_get_int(s, "screen");
+			if (monitorId != 0)
 				hasId = true;
 		}
 	}
@@ -412,6 +453,82 @@ static std::vector<MonitorInfoLite> enum_monitors()
 	return out;
 }
 
+#ifdef _WIN32
+#include <vector>
+#include <string>
+#include <cwctype>
+#include <windows.h>
+#include <winuser.h>
+#include <wingdi.h>
+
+static bool wcs_ieq(const wchar_t *a, const wchar_t *b)
+{
+	if (!a || !b)
+		return false;
+	while (*a && *b) {
+		if (towlower(*a) != towlower(*b))
+			return false;
+		++a;
+		++b;
+	}
+	return *a == 0 && *b == 0;
+}
+
+// If selector is a DisplayConfig monitorDevicePath (\\?\DISPLAY#...#{GUID}),
+// resolve it to a GDI device name (\\.\DISPLAYn) which matches MONITORINFOEX::szDevice.
+static bool resolve_displayconfig_path_to_gdi(const QString &selector, QString &outGdi)
+{
+	outGdi.clear();
+	if (selector.isEmpty())
+		return false;
+
+	const std::wstring want = selector.toStdWString();
+	if (want.rfind(LR"(\\?\DISPLAY#)", 0) != 0)
+		return false;
+
+	UINT32 pathCount = 0, modeCount = 0;
+	if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS)
+		return false;
+
+	std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+	std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+
+	if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) !=
+	    ERROR_SUCCESS)
+		return false;
+
+	for (UINT32 i = 0; i < pathCount; ++i) {
+		const auto &p = paths[i];
+
+		DISPLAYCONFIG_TARGET_DEVICE_NAME tdn{};
+		tdn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+		tdn.header.size = sizeof(tdn);
+		tdn.header.adapterId = p.targetInfo.adapterId;
+		tdn.header.id = p.targetInfo.id;
+
+		if (DisplayConfigGetDeviceInfo(&tdn.header) != ERROR_SUCCESS)
+			continue;
+
+		if (!wcs_ieq(tdn.monitorDevicePath, want.c_str()))
+			continue;
+
+		DISPLAYCONFIG_SOURCE_DEVICE_NAME sdn{};
+		sdn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+		sdn.header.size = sizeof(sdn);
+		sdn.header.adapterId = p.sourceInfo.adapterId;
+		sdn.header.id = p.sourceInfo.id;
+
+		if (DisplayConfigGetDeviceInfo(&sdn.header) != ERROR_SUCCESS)
+			return false;
+
+		outGdi = QString::fromWCharArray(sdn.viewGdiDeviceName);
+		return !outGdi.isEmpty();
+	}
+
+	return false;
+}
+#endif
+
 static bool match_monitor_rect(obs_source_t *src, RECT &rcOut)
 {
 	QString selector;
@@ -419,6 +536,18 @@ static bool match_monitor_rect(obs_source_t *src, RECT &rcOut)
 	bool hasId = false;
 	if (!get_monitor_capture_selector(src, selector, monId, hasId))
 		return false;
+
+#ifdef _WIN32
+	// Some monitor capture sources store the selected display as a DisplayConfig monitor device path
+	// (e.g. "\\?\DISPLAY#...#{GUID}") in monitor_id. Convert it to a GDI device name ("\\.\DISPLAYn")
+	// so we can map against the correct monitor rect (and not the full virtual desktop).
+	if (!selector.isEmpty()) {
+		QString gdi;
+		if (resolve_displayconfig_path_to_gdi(selector, gdi) && !gdi.isEmpty()) {
+			selector = gdi;
+		}
+	}
+#endif
 
 	auto mons = enum_monitors();
 	if (mons.empty())
@@ -611,8 +740,11 @@ bool ZoominatorController::mapCursorToSourcePixels(obs_source_t *src, int cursor
 #ifdef _WIN32
 	RECT rc{};
 	bool haveRect = false;
+	const bool isMonitorCap = (strcmp(id, "monitor_capture") == 0 || strcmp(id, "display_capture") == 0 ||
+				   strcmp(id, "screen_capture") == 0 ||
+				   (strstr(id, "monitor") && strstr(id, "capture")));
 
-	if (strcmp(id, "monitor_capture") == 0) {
+	if (isMonitorCap) {
 		haveRect = match_monitor_rect(src, rc);
 	} else if (strcmp(id, "window_capture") == 0 || strcmp(id, "game_capture") == 0) {
 		haveRect = match_window_rect_for_source(src, rc);
@@ -635,7 +767,29 @@ bool ZoominatorController::mapCursorToSourcePixels(obs_source_t *src, int cursor
 	}
 
 	if (!haveRect) {
-		return false;
+		// IMPORTANT: For monitor capture, mouse-follow must be relative to the *selected* monitor,
+		// not the entire virtual desktop. So we do NOT fall back to SM_*VIRTUALSCREEN here.
+		// If we cannot resolve a monitor rect, follow-mouse should be disabled rather than wrong.
+		if (isMonitorCap)
+			return false;
+
+		// Generic fallback: some sources don't expose a stable/known capture rect
+		// (or OBS/plugins may use different source IDs). In that case, map the cursor
+		// against the full virtual desktop so mouse-follow does not silently degrade
+		// into 'zoom to center'.
+		const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+		const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+		const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+		const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+		if (vw > 0 && vh > 0) {
+			rc.left = vx;
+			rc.top = vy;
+			rc.right = vx + vw;
+			rc.bottom = vy + vh;
+			haveRect = true;
+		} else {
+			return false;
+		}
 	}
 
 	const int w = rc.right - rc.left;
@@ -643,23 +797,24 @@ bool ZoominatorController::mapCursorToSourcePixels(obs_source_t *src, int cursor
 	if (w <= 0 || h <= 0)
 		return false;
 
-	if (cursorX < rc.left || cursorX >= rc.right || cursorY < rc.top || cursorY >= rc.bottom) {
-		cursorInside = false;
-		return true;
-	}
-	cursorInside = true;
+	// Even if the cursor is slightly outside the capture rect (DPI rounding, monitor selector mismatch, etc.),
+	// still compute a clamped position so mouse-follow can keep the item pinned to edges instead of snapping to center.
+	cursorInside = !(cursorX < rc.left || cursorX >= rc.right || cursorY < rc.top || cursorY >= rc.bottom);
 
-	const double relX = (cursorX - rc.left) / (double)w;
-	const double relY = (cursorY - rc.top) / (double)h;
+	const int clampedX = (cursorX < rc.left) ? rc.left : (cursorX >= rc.right ? (rc.right - 1) : cursorX);
+	const int clampedY = (cursorY < rc.top) ? rc.top : (cursorY >= rc.bottom ? (rc.bottom - 1) : cursorY);
 
-	const uint32_t sw = obs_source_get_width(src);
-	const uint32_t sh = obs_source_get_height(src);
-	if (sw == 0 || sh == 0)
-		return false;
+	const double relX = (clampedX - rc.left) / (double)w;
+	const double relY = (clampedY - rc.top) / (double)h;
 
-	sx = (float)(relX * (double)sw);
-	sy = (float)(relY * (double)sh);
-	return true;
+const uint32_t sw = obs_source_get_width(src);
+const uint32_t sh = obs_source_get_height(src);
+if (sw == 0 || sh == 0)
+	return false;
+
+sx = (float)(relX * (double)sw);
+sy = (float)(relY * (double)sh);
+return true;
 #else
 	(void)cursorX;
 	(void)cursorY;
@@ -739,7 +894,7 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 		bool inside = false;
 		const bool mapped = getCursorPos(cx, cy) && mapCursorToSourcePixels(src, cx, cy, mx, my, inside);
 
-		if (mapped && inside) {
+		if (mapped) {
 			if (!followHasPos) {
 				followX = mx;
 				followY = my;
@@ -765,7 +920,7 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 			bool inside = false;
 			const bool mapped = getCursorPos(cx, cy) &&
 					    mapCursorToSourcePixels(src, cx, cy, mx, my, inside);
-			if (mapped && inside) {
+			if (mapped) {
 				followX = mx;
 				followY = my;
 				followHasPos = true;
@@ -784,9 +939,9 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 	const double ch = haveVi ? (double)ovi.base_height : 1080.0;
 
 	double cover = 1.0;
-	// "Cover" mode: scale the target so it always fully covers the OBS base canvas.
-	// This must apply regardless of canvas orientation (landscape/portrait); otherwise
-	// tracking/clamping can allow the capture to no longer cover the frame (corner leaks).
+	// "Cover" mode: ensure the rendered item fully covers the OBS base canvas so clamping works
+	// and corners never leak, regardless of the user's original scaling.
+	// If the user originally scaled the item *larger* than cover, we preserve that by taking max().
 	if (portraitCover) {
 		const double sx = cw / visW;
 		const double sy = ch / visH;
@@ -794,12 +949,25 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 	}
 
 	vec2 sc = orig.scale;
-	sc.x *= (float)(cover * z);
-	sc.y *= (float)(cover * z);
+	if (portraitCover) {
+		// Guarantee coverage even if the user scaled the item smaller than the canvas.
+		sc.x = (float)std::max((double)sc.x, cover);
+		sc.y = (float)std::max((double)sc.y, cover);
+	}
+	sc.x *= (float)z;
+	sc.y *= (float)z;
 	obs_sceneitem_set_scale(item, &sc);
 
 	const double centerX = cw * 0.5;
 	const double centerY = ch * 0.5;
+
+	// Normalize follow point to the *visible* region (crop-aware) so X/Y panning works reliably.
+	// Cursor mapping returns coordinates in the full source space (sw/sh). We remap to the visible
+	// area (visW/visH) before applying scale so we can reach both sides and avoid "stuck to left".
+	const double relFx = clampd((double)fx / (double)sw, 0.0, 1.0);
+	const double relFy = clampd((double)fy / (double)sh, 0.0, 1.0);
+	fx = (float)((double)crop.left + relFx * visW);
+	fy = (float)((double)crop.top + relFy * visH);
 	const double fxAdj = (double)fx - (double)crop.left;
 	const double fyAdj = (double)fy - (double)crop.top;
 	double tlx = centerX - fxAdj * (double)sc.x;
@@ -895,6 +1063,62 @@ static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantW
 	return true;
 }
 
+static inline bool is_modifier_vk(int vk)
+{
+	switch (vk) {
+	case VK_CONTROL:
+	case VK_LCONTROL:
+	case VK_RCONTROL:
+	case VK_MENU:
+	case VK_LMENU:
+	case VK_RMENU:
+	case VK_SHIFT:
+	case VK_LSHIFT:
+	case VK_RSHIFT:
+	case VK_LWIN:
+	case VK_RWIN:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static inline bool is_wanted_modifier_vk(int vk, const ZoominatorController *ctl)
+{
+	if (!ctl)
+		return false;
+	if (ctl->modCtrl && (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL))
+		return true;
+	if (ctl->modAlt && (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU))
+		return true;
+	if (ctl->modShift && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT))
+		return true;
+	if (ctl->modWin && (vk == VK_LWIN || vk == VK_RWIN))
+		return true;
+	return false;
+}
+
+#ifdef _WIN32
+static bool vk_matches(int pressedVk, int wantVk)
+{
+	if (pressedVk == wantVk)
+		return true;
+
+	// Treat number row and numpad digits as equivalent. This fixes cases where the
+	// UI stores "Ctrl+9" but the user actually pressed Numpad 9 (VK_NUMPAD9).
+	if (wantVk >= '0' && wantVk <= '9') {
+		const int d = wantVk - '0';
+		return pressedVk == (VK_NUMPAD0 + d);
+	}
+	if (wantVk >= VK_NUMPAD0 && wantVk <= VK_NUMPAD9) {
+		const int d = wantVk - VK_NUMPAD0;
+		return pressedVk == ('0' + d);
+	}
+
+	return false;
+}
+#endif
+
 LRESULT CALLBACK ZoominatorController::kb_hook_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
 	if (nCode == HC_ACTION && g_ctl && g_ctl->hkValid && g_ctl->triggerType == "keyboard") {
@@ -902,7 +1126,42 @@ LRESULT CALLBACK ZoominatorController::kb_hook_proc(int nCode, WPARAM wParam, LP
 		const bool down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
 		const bool up = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
 
-		if (k && (down || up) && (int)k->vkCode == g_ctl->hotkeyVk) {
+		if (!k || !(down || up))
+			return CallNextHookEx((HHOOK)g_ctl->keyboardHook, nCode, wParam, lParam);
+
+		const int vk = (int)k->vkCode;
+
+		// --- Modifier-only trigger mode ---
+		// If no "main" key is configured (hotkeyVk==0), we allow triggers on modifier
+		// presses/releases (Ctrl/Alt/Shift/Win) using the checkbox selection.
+		if (g_ctl->hotkeyVk == 0) {
+			// Ignore non-modifier keys entirely in this mode.
+			if (!is_modifier_vk(vk))
+				return CallNextHookEx((HHOOK)g_ctl->keyboardHook, nCode, wParam, lParam);
+
+			// Only react to modifiers that are part of the desired set.
+			if (!is_wanted_modifier_vk(vk, g_ctl))
+				return CallNextHookEx((HHOOK)g_ctl->keyboardHook, nCode, wParam, lParam);
+
+			const bool matchNow = mods_current(g_ctl->modCtrl, g_ctl->modAlt, g_ctl->modShift, g_ctl->modWin);
+
+			if (g_ctl->hotkeyMode == "toggle") {
+				// Toggle when the full modifier set becomes satisfied.
+				if (down && matchNow)
+					g_ctl->onTriggerDown();
+			} else {
+				// Hold: start when satisfied, stop when it becomes unsatisfied.
+				if (down && matchNow)
+					g_ctl->onTriggerDown();
+				if (up && g_ctl->zoomPressed && !matchNow)
+					g_ctl->onTriggerUp();
+			}
+
+			return CallNextHookEx((HHOOK)g_ctl->keyboardHook, nCode, wParam, lParam);
+		}
+
+		// --- Normal key+mods mode ---
+		if (vk_matches(vk, g_ctl->hotkeyVk)) {
 			if (mods_current(g_ctl->modCtrl, g_ctl->modAlt, g_ctl->modShift, g_ctl->modWin)) {
 				if (g_ctl->hotkeyMode == "toggle") {
 					if (down)
@@ -1016,15 +1275,19 @@ static int qtKeyToVk(int qtKey)
 {
 #ifndef _WIN32
 	(void)qtKey;
-#endif
-#ifdef _WIN32
+	return 0;
+#else
+	// 1. Alphanumeric
 	if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z)
 		return 'A' + (qtKey - Qt::Key_A);
 	if (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9)
 		return '0' + (qtKey - Qt::Key_0);
+
+	// 2. Function Keys
 	if (qtKey >= Qt::Key_F1 && qtKey <= Qt::Key_F24)
 		return VK_F1 + (qtKey - Qt::Key_F1);
 
+	// 3. Explicit Mapping for Special Keys
 	switch (qtKey) {
 	case Qt::Key_Space:
 		return VK_SPACE;
@@ -1057,11 +1320,57 @@ static int qtKeyToVk(int qtKey)
 		return VK_PRIOR;
 	case Qt::Key_PageDown:
 		return VK_NEXT;
+	case Qt::Key_Print:
+		return VK_SNAPSHOT;
+	case Qt::Key_Pause:
+		return VK_PAUSE;
+	case Qt::Key_CapsLock:
+		return VK_CAPITAL;
+	case Qt::Key_Clear:
+		return VK_CLEAR;
+
+	// Modifiers (Important for combinations)
+	case Qt::Key_Shift:
+		return VK_SHIFT;
+	case Qt::Key_Control:
+		return VK_CONTROL;
+	case Qt::Key_Alt:
+		return VK_MENU;
+	case Qt::Key_Meta:
+		return VK_LWIN; // Windows Key
+
+	// Punctuation / OEM Keys
+	case Qt::Key_Semicolon:
+		return VK_OEM_1;
+	case Qt::Key_Plus:
+		return VK_OEM_PLUS;
+	case Qt::Key_Comma:
+		return VK_OEM_COMMA;
+	case Qt::Key_Minus:
+		return VK_OEM_MINUS;
+	case Qt::Key_Period:
+		return VK_OEM_PERIOD;
+	case Qt::Key_Slash:
+		return VK_OEM_2;
+	case Qt::Key_QuoteLeft:
+		return VK_OEM_3; // Tilde ~
+	case Qt::Key_BracketLeft:
+		return VK_OEM_4;
+	case Qt::Key_Backslash:
+		return VK_OEM_5;
+	case Qt::Key_BracketRight:
+		return VK_OEM_6;
+
 	default:
 		break;
 	}
-#endif
+
+	// 4. Fallback for Keypad or missed ASCII
+	if (qtKey >= 0x20 && qtKey <= 0x7E)
+		return qtKey;
+
 	return 0;
+#endif
 }
 
 void ZoominatorController::rebuildTriggersFromSettings()
@@ -1074,26 +1383,57 @@ void ZoominatorController::rebuildTriggersFromSettings()
 
 	if (triggerType == "keyboard") {
 		QKeySequence seq(hotkeySequence);
-		if (!seq.isEmpty()) {
+		if (seq.isEmpty()) {
+			// Modifier-only mode: no main key, only the modifier checkboxes.
+			hotkeyVk = 0;
+			hkValid = (modCtrl || modAlt || modShift || modWin);
+			if (debug)
+				blog(LOG_INFO,
+				     "[Zoominator] Hotkey empty; using modifier-only trigger (ctrl=%d alt=%d shift=%d win=%d valid=%d)",
+				     modCtrl ? 1 : 0, modAlt ? 1 : 0, modShift ? 1 : 0, modWin ? 1 : 0, hkValid ? 1 : 0);
+		} else {
 			const QKeyCombination kc = seq[0];
 			const auto mods = kc.keyboardModifiers();
 			const int key = int(kc.key());
 			hotkeyVk = qtKeyToVk(key);
 
-			modCtrl = mods.testFlag(Qt::ControlModifier);
-			modAlt = mods.testFlag(Qt::AltModifier);
-			modShift = mods.testFlag(Qt::ShiftModifier);
-			modWin = mods.testFlag(Qt::MetaModifier);
+			// If the user recorded only a modifier key (e.g. "Ctrl"), treat it as
+			// modifier-only mode. This avoids the broken "wantCtrl=false" situation.
+			const bool noMods = (mods == Qt::NoModifier);
+#ifdef _WIN32
+			const bool keyIsModifier = (hotkeyVk == VK_CONTROL || hotkeyVk == VK_LCONTROL || hotkeyVk == VK_RCONTROL ||
+						    hotkeyVk == VK_MENU || hotkeyVk == VK_LMENU || hotkeyVk == VK_RMENU ||
+						    hotkeyVk == VK_SHIFT || hotkeyVk == VK_LSHIFT || hotkeyVk == VK_RSHIFT ||
+						    hotkeyVk == VK_LWIN || hotkeyVk == VK_RWIN);
+#else
+			const bool keyIsModifier = false;
+#endif
+			if (hotkeyVk != 0 && noMods && keyIsModifier) {
+				// Convert "single modifier hotkey" into modifier-only trigger.
+				modCtrl = (hotkeyVk == VK_CONTROL || hotkeyVk == VK_LCONTROL || hotkeyVk == VK_RCONTROL);
+				modAlt = (hotkeyVk == VK_MENU || hotkeyVk == VK_LMENU || hotkeyVk == VK_RMENU);
+				modShift = (hotkeyVk == VK_SHIFT || hotkeyVk == VK_LSHIFT || hotkeyVk == VK_RSHIFT);
+				modWin = (hotkeyVk == VK_LWIN || hotkeyVk == VK_RWIN);
+				hotkeyVk = 0;
+				hkValid = (modCtrl || modAlt || modShift || modWin);
+				if (debug)
+					blog(LOG_INFO,
+					     "[Zoominator] Single-modifier hotkey parsed; using modifier-only trigger (ctrl=%d alt=%d shift=%d win=%d valid=%d)",
+					     modCtrl ? 1 : 0, modAlt ? 1 : 0, modShift ? 1 : 0, modWin ? 1 : 0, hkValid ? 1 : 0);
+			} else {
+				// Normal key+mods mode: use the key sequence modifiers.
+				modCtrl = mods.testFlag(Qt::ControlModifier);
+				modAlt = mods.testFlag(Qt::AltModifier);
+				modShift = mods.testFlag(Qt::ShiftModifier);
+				modWin = mods.testFlag(Qt::MetaModifier);
 
-			hkValid = (hotkeyVk != 0);
-			if (debug)
-				blog(LOG_INFO,
-				     "[Zoominator] Hotkey parsed: '%s' vk=%d ctrl=%d alt=%d shift=%d win=%d valid=%d",
-				     hotkeySequence.toUtf8().constData(), hotkeyVk, modCtrl ? 1 : 0, modAlt ? 1 : 0,
-				     modShift ? 1 : 0, modWin ? 1 : 0, hkValid ? 1 : 0);
-		} else {
-			if (debug)
-				blog(LOG_INFO, "[Zoominator] Hotkey empty; keyboard trigger disabled.");
+				hkValid = (hotkeyVk != 0);
+				if (debug)
+					blog(LOG_INFO,
+					     "[Zoominator] Hotkey parsed: '%s' vk=%d ctrl=%d alt=%d shift=%d win=%d valid=%d",
+					     hotkeySequence.toUtf8().constData(), hotkeyVk, modCtrl ? 1 : 0, modAlt ? 1 : 0,
+					     modShift ? 1 : 0, modWin ? 1 : 0, hkValid ? 1 : 0);
+			}
 		}
 	} else {
 		hkValid = true;
