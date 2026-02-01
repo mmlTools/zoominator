@@ -1427,14 +1427,23 @@ void ZoominatorController::rebuildTriggersFromSettings()
 						    hotkeyVk == VK_SHIFT || hotkeyVk == VK_LSHIFT || hotkeyVk == VK_RSHIFT ||
 						    hotkeyVk == VK_LWIN || hotkeyVk == VK_RWIN);
 #else
-			const bool keyIsModifier = false;
+			// Non-Windows: qtKeyToVk() returns 0, so detect "single-modifier hotkeys" directly from the Qt key.
+			const bool keyIsModifier = (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt || key == Qt::Key_Meta);
 #endif
-			if (hotkeyVk != 0 && noMods && keyIsModifier) {
+			if (noMods && keyIsModifier) {
 				// Convert "single modifier hotkey" into modifier-only trigger.
+#ifdef _WIN32
 				modCtrl = (hotkeyVk == VK_CONTROL || hotkeyVk == VK_LCONTROL || hotkeyVk == VK_RCONTROL);
 				modAlt = (hotkeyVk == VK_MENU || hotkeyVk == VK_LMENU || hotkeyVk == VK_RMENU);
 				modShift = (hotkeyVk == VK_SHIFT || hotkeyVk == VK_LSHIFT || hotkeyVk == VK_RSHIFT);
 				modWin = (hotkeyVk == VK_LWIN || hotkeyVk == VK_RWIN);
+#else
+				modCtrl = (key == Qt::Key_Control);
+				modAlt = (key == Qt::Key_Alt);
+				modShift = (key == Qt::Key_Shift);
+				// Treat Qt::Key_Meta as "Win/Super" on Linux and "Command" on macOS.
+				modWin = (key == Qt::Key_Meta);
+#endif
 				hotkeyVk = 0;
 				hkValid = (modCtrl || modAlt || modShift || modWin);
 				if (debug)
