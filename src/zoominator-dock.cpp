@@ -6,14 +6,15 @@
 
 #include <cstring>
 
+#include <QAbstractItemView>
 #include <QComboBox>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMetaObject>
 #include <QPushButton>
 #include <QShowEvent>
 #include <QVBoxLayout>
-#include <QAbstractItemView>
 
 namespace {
 
@@ -21,6 +22,7 @@ static bool is_capture_source_id(const char *id)
 {
 	if (!id)
 		return false;
+
 	return strcmp(id, "monitor_capture") == 0 || strcmp(id, "window_capture") == 0 ||
 	       strcmp(id, "game_capture") == 0 || strcmp(id, "screen_capture") == 0 ||
 	       strcmp(id, "display_capture") == 0 || strcmp(id, "macos_screen_capture") == 0;
@@ -31,7 +33,16 @@ static bool is_capture_source_id(const char *id)
 ZoominatorDock::ZoominatorDock(QWidget *parent) : QWidget(parent)
 {
 	buildUi();
+
 	obs_frontend_add_event_callback(&ZoominatorDock::onFrontendEvent, this);
+
+	obsSignals = obs_get_signal_handler();
+	if (obsSignals) {
+		signal_handler_connect(obsSignals, "source_create", &ZoominatorDock::onObsSignal, this);
+		signal_handler_connect(obsSignals, "source_remove", &ZoominatorDock::onObsSignal, this);
+		signal_handler_connect(obsSignals, "source_destroy", &ZoominatorDock::onObsSignal, this);
+		signal_handler_connect(obsSignals, "source_rename", &ZoominatorDock::onObsSignal, this);
+	}
 
 	refreshLists();
 	loadFromController();
@@ -39,6 +50,14 @@ ZoominatorDock::ZoominatorDock(QWidget *parent) : QWidget(parent)
 
 ZoominatorDock::~ZoominatorDock()
 {
+	if (obsSignals) {
+		signal_handler_disconnect(obsSignals, "source_create", &ZoominatorDock::onObsSignal, this);
+		signal_handler_disconnect(obsSignals, "source_remove", &ZoominatorDock::onObsSignal, this);
+		signal_handler_disconnect(obsSignals, "source_destroy", &ZoominatorDock::onObsSignal, this);
+		signal_handler_disconnect(obsSignals, "source_rename", &ZoominatorDock::onObsSignal, this);
+		obsSignals = nullptr;
+	}
+
 	obs_frontend_remove_event_callback(&ZoominatorDock::onFrontendEvent, this);
 }
 
@@ -59,19 +78,32 @@ void ZoominatorDock::onFrontendEvent(obs_frontend_event event, void *private_dat
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
-		QMetaObject::invokeMethod(
-			dock,
-			[dock]() {
-				dock->refreshLists();
-				dock->loadFromController();
-			},
-			Qt::QueuedConnection);
+		dock->queueRefresh();
 		break;
 	default:
 		break;
 	}
 }
 
+void ZoominatorDock::onObsSignal(void *private_data, calldata_t * /*cd*/)
+{
+	auto *dock = reinterpret_cast<ZoominatorDock *>(private_data);
+	if (!dock)
+		return;
+
+	dock->queueRefresh();
+}
+
+void ZoominatorDock::queueRefresh()
+{
+	QMetaObject::invokeMethod(
+		this,
+		[this]() {
+			refreshLists();
+			loadFromController();
+		},
+		Qt::QueuedConnection);
+}
 
 void ZoominatorDock::buildUi()
 {
@@ -107,7 +139,7 @@ void ZoominatorDock::buildUi()
 			border-bottom-left-radius: 3px;
 			border-bottom-right-radius: 3px;
 			background-color: #272a33;
-      		border: 1px solid #3c404d;
+			border: 1px solid #3c404d;
 		}
 
 		#zoominatorCombo {
@@ -126,8 +158,9 @@ void ZoominatorDock::buildUi()
 
 void ZoominatorDock::populateSources()
 {
-	cmbSource->clear();
+	const QString previousSelection = cmbSource->currentText();
 
+	cmbSource->clear();
 	cmbSource->addItem(tr("Select Media Source..."));
 
 	obs_enum_sources(
@@ -148,9 +181,17 @@ void ZoominatorDock::populateSources()
 	if (cmbSource->count() == 1) {
 		cmbSource->addItem(tr("(no capture sources found)"));
 		cmbSource->setEnabled(false);
-	} else {
-		cmbSource->setEnabled(true);
+		cmbSource->setCurrentIndex(1);
+		return;
 	}
+
+	cmbSource->setEnabled(true);
+
+	int restoreIdx = previousSelection.isEmpty() ? -1 : cmbSource->findText(previousSelection);
+	if (restoreIdx > 0)
+		cmbSource->setCurrentIndex(restoreIdx);
+	else
+		cmbSource->setCurrentIndex(0);
 }
 
 void ZoominatorDock::refreshLists()

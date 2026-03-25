@@ -2,7 +2,6 @@
 param(
     [ValidateSet('x64')]
     [string] $Target = 'x64',
-
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release', 'MinSizeRel')]
     [string] $Configuration = 'RelWithDebInfo'
 )
@@ -18,7 +17,7 @@ if ( $env:CI -eq $null ) {
     throw "Build-Windows.ps1 requires CI environment"
 }
 
-if ( -not [System.Environment]::Is64BitOperatingSystem ) {
+if ( ! ( [System.Environment]::Is64BitOperatingSystem ) ) {
     throw "A 64-bit system is required to build the project."
 }
 
@@ -38,23 +37,11 @@ function Build {
     $ScriptHome = $PSScriptRoot
     $ProjectRoot = Resolve-Path -Path "$PSScriptRoot/../.."
 
-    $UtilityFunctions = Get-ChildItem -Path "$ScriptHome/utils.pwsh/*.ps1" -Recurse
-    foreach ($Utility in $UtilityFunctions) {
+    $UtilityFunctions = Get-ChildItem -Path $PSScriptRoot/utils.pwsh/*.ps1 -Recurse
+
+    foreach($Utility in $UtilityFunctions) {
         Write-Debug "Loading $($Utility.FullName)"
         . $Utility.FullName
-    }
-
-    $BuildSpecFile = Join-Path $ProjectRoot "buildspec.json"
-    if (-not (Test-Path $BuildSpecFile)) {
-        throw "Buildspec not found at ${BuildSpecFile}"
-    }
-
-    $BuildSpec = Get-Content -Path $BuildSpecFile -Raw | ConvertFrom-Json
-    $ProductName = $BuildSpec.name
-    $ProductVersion = $BuildSpec.version
-
-    if (-not $ProductName -or -not $ProductVersion) {
-        throw "buildspec.json must contain 'name' and 'version'."
     }
 
     Push-Location -Stack BuildTemp
@@ -65,23 +52,21 @@ function Build {
     $CmakeInstallArgs = @()
 
     if ( $DebugPreference -eq 'Continue' ) {
-        $CmakeArgs += '--debug-output'
-        $CmakeBuildArgs += '--verbose'
-        $CmakeInstallArgs += '--verbose'
+        $CmakeArgs += ('--debug-output')
+        $CmakeBuildArgs += ('--verbose')
+        $CmakeInstallArgs += ('--verbose')
     }
 
     $CmakeBuildArgs += @(
-        '--preset', "windows-${Target}",
-        '--config', $Configuration,
-        '--parallel',
+        '--preset', "windows-${Target}"
+        '--config', $Configuration
+        '--parallel'
         '--', '/consoleLoggerParameters:Summary', '/noLogo'
     )
 
-    $InstallPrefix = "${ProjectRoot}/release/${Configuration}"
-
     $CmakeInstallArgs += @(
-        '--install', "build_${Target}",
-        '--prefix', $InstallPrefix,
+        '--install', "build_${Target}"
+        '--prefix', "${ProjectRoot}/release/${Configuration}"
         '--config', $Configuration
     )
 
@@ -94,12 +79,8 @@ function Build {
     Log-Group "Installing ${ProductName}..."
     Invoke-External cmake @CmakeInstallArgs
 
-    Log-Group
-
     Pop-Location -Stack BuildTemp
-
-    Write-Host "Build complete:"
-    Write-Host "  - Installed to: $InstallPrefix"
+    Log-Group
 }
 
 Build

@@ -1,9 +1,10 @@
 #pragma once
+
 #include <QWidget>
 
-// OBS frontend API (obs_frontend_event / obs_frontend_event_cb)
 extern "C" {
 #include <obs-frontend-api.h>
+#include <obs.h>
 }
 
 class QComboBox;
@@ -29,10 +30,14 @@ private slots:
 private:
 	void buildUi();
 	void populateSources();
+	void queueRefresh();
+
 	static void onFrontendEvent(obs_frontend_event event, void *private_data);
+	static void onObsSignal(void *private_data, calldata_t *cd);
 
 	QComboBox *cmbSource = nullptr;
 	QPushButton *btnRefresh = nullptr;
 
 	bool loading = false;
+	signal_handler_t *obsSignals = nullptr;
 };

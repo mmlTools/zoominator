@@ -82,3 +82,57 @@ A portable input layer is planned so Zoominator can gracefully adapt to each pla
 ## Project Notes
 
 Zoominator is designed to behave like a native OBS camera system rather than a script. The core is built on libobs transforms, with a small, focused UI and a configuration system that follows OBS conventions for stability and portability.
+
+## Clang format fix
+
+```bash
+git update-index --chmod=+x .github/scripts/build-macos
+git update-index --chmod=+x .github/scripts/build-ubuntu
+git update-index --chmod=+x .github/scripts/package-macos
+git update-index --chmod=+x .github/scripts/package-ubuntu
+
+git update-index --chmod=+x .github/scripts/utils.zsh/check_macos
+git update-index --chmod=+x .github/scripts/utils.zsh/check_ubuntu
+git update-index --chmod=+x .github/scripts/utils.zsh/log_debug
+git update-index --chmod=+x .github/scripts/utils.zsh/log_error
+git update-index --chmod=+x .github/scripts/utils.zsh/log_group
+git update-index --chmod=+x .github/scripts/utils.zsh/log_info
+git update-index --chmod=+x .github/scripts/utils.zsh/log_output
+git update-index --chmod=+x .github/scripts/utils.zsh/log_status
+git update-index --chmod=+x .github/scripts/utils.zsh/log_warning
+git update-index --chmod=+x .github/scripts/utils.zsh/mkcd
+git update-index --chmod=+x .github/scripts/utils.zsh/setup_ubuntu
+git update-index --chmod=+x .github/scripts/utils.zsh/set_loglevel
+
+git update-index --chmod=+x build-aux/.run-format.zsh
+git update-index --chmod=+x build-aux/run-clang-format
+git update-index --chmod=+x build-aux/run-gersemi
+git update-index --chmod=+x build-aux/run-swift-format
+
+git update-index --chmod=+x build-aux/.functions/log_debug
+git update-index --chmod=+x build-aux/.functions/log_error
+git update-index --chmod=+x build-aux/.functions/log_group
+git update-index --chmod=+x build-aux/.functions/log_info
+git update-index --chmod=+x build-aux/.functions/log_output
+git update-index --chmod=+x build-aux/.functions/log_status
+git update-index --chmod=+x build-aux/.functions/log_warning
+git update-index --chmod=+x build-aux/.functions/set_loglevel
+```
+
+```gitattributes
+.gitattributes
+*.sh text eol=lf
+*.zsh text eol=lf
+.github/scripts/** text eol=lf
+.functions/* text eol=lf
+run-clang-format text eol=lf
+run-gersemi text eol=lf
+run-swift-format text eol=lf
+.run-format.zsh text eol=lf
+```
+
+```bash
+git add --renormalize .
+git commit -m "Normalize line endings for Unix scripts"
+git push
+```
