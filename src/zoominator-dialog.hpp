@@ -56,5 +56,9 @@ private:
 	QPushButton *btnApply = nullptr;
 	QPushButton *btnTest = nullptr;
 
+	QWidget *rowHotkeyWidget = nullptr;
+	QWidget *rowMouseWidget = nullptr;
+	QWidget *rowModifiersWidget = nullptr;
+
 	bool loading = false;
 };

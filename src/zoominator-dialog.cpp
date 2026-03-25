@@ -18,6 +18,7 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
+#include <QString>
 
 namespace {
 static void frontend_event_cb(enum obs_frontend_event event, void *data)
@@ -90,38 +91,44 @@ void ZoominatorDialog::buildUi()
 	rowType->addWidget(cmbTrigger, 1);
 	trigLay->addLayout(rowType);
 
-	auto *rowHot = new QHBoxLayout();
-	editHotkey = new QKeySequenceEdit(trigBox);
-	btnClearHotkey = new QPushButton("Clear", trigBox);
+	rowHotkeyWidget = new QWidget(trigBox);
+	auto *rowHot = new QHBoxLayout(rowHotkeyWidget);
+	rowHot->setContentsMargins(0, 0, 0, 0);
+	editHotkey = new QKeySequenceEdit(rowHotkeyWidget);
+	btnClearHotkey = new QPushButton("Clear", rowHotkeyWidget);
 	btnClearHotkey->setToolTip("Clear keyboard hotkey");
-	rowHot->addWidget(new QLabel("Hotkey:", trigBox));
+	rowHot->addWidget(new QLabel("Hotkey:", rowHotkeyWidget));
 	rowHot->addWidget(editHotkey, 1);
 	rowHot->addWidget(btnClearHotkey, 0);
-	trigLay->addLayout(rowHot);
+	trigLay->addWidget(rowHotkeyWidget);
 
-	auto *rowMouse = new QHBoxLayout();
-	cmbMouseBtn = new QComboBox(trigBox);
+	rowMouseWidget = new QWidget(trigBox);
+	auto *rowMouse = new QHBoxLayout(rowMouseWidget);
+	rowMouse->setContentsMargins(0, 0, 0, 0);
+	cmbMouseBtn = new QComboBox(rowMouseWidget);
 	cmbMouseBtn->addItem("Left", "left");
 	cmbMouseBtn->addItem("Right", "right");
 	cmbMouseBtn->addItem("Middle", "middle");
 	cmbMouseBtn->addItem("X1", "x1");
 	cmbMouseBtn->addItem("X2", "x2");
-	rowMouse->addWidget(new QLabel("Mouse Button:", trigBox));
+	rowMouse->addWidget(new QLabel("Mouse Button:", rowMouseWidget));
 	rowMouse->addWidget(cmbMouseBtn, 1);
-	trigLay->addLayout(rowMouse);
+	trigLay->addWidget(rowMouseWidget);
 
-	auto *rowMods = new QHBoxLayout();
-	chkCtrl = new QCheckBox("Ctrl", trigBox);
-	chkAlt = new QCheckBox("Alt", trigBox);
-	chkShift = new QCheckBox("Shift", trigBox);
-	chkWin = new QCheckBox("Win", trigBox);
-	rowMods->addWidget(new QLabel("Modifiers:", trigBox));
+	rowModifiersWidget = new QWidget(trigBox);
+	auto *rowMods = new QHBoxLayout(rowModifiersWidget);
+	rowMods->setContentsMargins(0, 0, 0, 0);
+	chkCtrl = new QCheckBox("Ctrl", rowModifiersWidget);
+	chkAlt = new QCheckBox("Alt", rowModifiersWidget);
+	chkShift = new QCheckBox("Shift", rowModifiersWidget);
+	chkWin = new QCheckBox("Win", rowModifiersWidget);
+	rowMods->addWidget(new QLabel("Modifiers:", rowModifiersWidget));
 	rowMods->addWidget(chkCtrl);
 	rowMods->addWidget(chkAlt);
 	rowMods->addWidget(chkShift);
 	rowMods->addWidget(chkWin);
 	rowMods->addStretch(1);
-	trigLay->addLayout(rowMods);
+	trigLay->addWidget(rowModifiersWidget);
 
 	root->addWidget(trigBox);
 
@@ -155,7 +162,8 @@ void ZoominatorDialog::buildUi()
 	cfg->addRow("Follow Speed", spFollowSpeed);
 
 	chkPortraitCover = new QCheckBox("Portrait canvas cover (auto scale to fill)", cfgBox);
-	chkPortraitCover->setToolTip("When the base canvas is vertical (portrait), scale the capture so it fully covers the canvas (no top/bottom gaps).");
+	chkPortraitCover->setToolTip(
+		"When the base canvas is vertical (portrait), scale the capture so it fully covers the canvas (no top/bottom gaps).");
 	cfg->addRow(chkPortraitCover);
 
 	chkDebug = new QCheckBox("Debug Logging", cfgBox);
@@ -184,6 +192,18 @@ void ZoominatorDialog::buildUi()
 	connect(btnApply, &QPushButton::clicked, this, &ZoominatorDialog::applyToController);
 	connect(btnTest, &QPushButton::clicked, this, &ZoominatorDialog::testZoom);
 	connect(btnClearHotkey, &QPushButton::clicked, this, &ZoominatorDialog::clearHotkey);
+
+	connect(cmbTrigger, &QComboBox::currentIndexChanged, this, [this](int) {
+		const QString trigger = cmbTrigger->currentData().toString();
+		const bool isMouse = (trigger == "mouse");
+
+		if (rowMouseWidget)
+			rowMouseWidget->setVisible(isMouse);
+		if (rowHotkeyWidget)
+			rowHotkeyWidget->setVisible(!isMouse);
+		if (rowModifiersWidget)
+			rowModifiersWidget->setVisible(isMouse);
+	});
 }
 
 void ZoominatorDialog::populateSources()
@@ -194,17 +214,21 @@ void ZoominatorDialog::populateSources()
 	cmbSource->clear();
 	cmbSource->addItem("(Select Source)", "");
 
-	struct Ctx { QComboBox *cmb; };
+	struct Ctx {
+		QComboBox *cmb;
+	};
 	Ctx ctx{cmbSource};
 
 	auto enum_cb = [](void *p, obs_source_t *src) -> bool {
 		auto *c = static_cast<Ctx *>(p);
-		if (!c || !src) return true;
+		if (!c || !src)
+			return true;
 		const char *id = obs_source_get_id(src);
 		if (!is_capture_source_id(id))
 			return true;
 		const char *nm = obs_source_get_name(src);
-		if (!nm || !*nm) return true;
+		if (!nm || !*nm)
+			return true;
 		c->cmb->addItem(QString::fromUtf8(nm), QString::fromUtf8(nm));
 		return true;
 	};
@@ -212,8 +236,10 @@ void ZoominatorDialog::populateSources()
 	obs_enum_sources(enum_cb, &ctx);
 
 	int idx = cmbSource->findData(cur);
-	if (idx < 0) idx = cmbSource->findData(ZoominatorController::instance().sourceName);
-	if (idx >= 0) cmbSource->setCurrentIndex(idx);
+	if (idx < 0)
+		idx = cmbSource->findData(ZoominatorController::instance().sourceName);
+	if (idx >= 0)
+		cmbSource->setCurrentIndex(idx);
 
 	cmbSource->blockSignals(false);
 }
@@ -231,16 +257,20 @@ void ZoominatorDialog::loadFromController()
 	refreshLists();
 
 	int sidx = cmbSource->findData(c.sourceName);
-	if (sidx >= 0) cmbSource->setCurrentIndex(sidx);
+	if (sidx >= 0)
+		cmbSource->setCurrentIndex(sidx);
 
 	int midx = cmbMode->findData(c.hotkeyMode);
-	if (midx >= 0) cmbMode->setCurrentIndex(midx);
+	if (midx >= 0)
+		cmbMode->setCurrentIndex(midx);
 
 	int tidx = cmbTrigger->findData(c.triggerType);
-	if (tidx >= 0) cmbTrigger->setCurrentIndex(tidx);
+	if (tidx >= 0)
+		cmbTrigger->setCurrentIndex(tidx);
 
 	int bidx = cmbMouseBtn->findData(c.mouseButton);
-	if (bidx >= 0) cmbMouseBtn->setCurrentIndex(bidx);
+	if (bidx >= 0)
+		cmbMouseBtn->setCurrentIndex(bidx);
 
 	chkCtrl->setChecked(c.modCtrl);
 	chkAlt->setChecked(c.modAlt);
@@ -256,6 +286,16 @@ void ZoominatorDialog::loadFromController()
 	spFollowSpeed->setValue(c.followSpeed);
 	chkPortraitCover->setChecked(c.portraitCover);
 	chkDebug->setChecked(c.debug);
+
+	const QString trigger = cmbTrigger->currentData().toString();
+	const bool isMouse = (trigger == "mouse");
+
+	if (rowMouseWidget)
+		rowMouseWidget->setVisible(isMouse);
+	if (rowHotkeyWidget)
+		rowHotkeyWidget->setVisible(!isMouse);
+	if (rowModifiersWidget)
+		rowModifiersWidget->setVisible(isMouse);
 
 	loading = false;
 }
