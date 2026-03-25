@@ -1268,7 +1268,9 @@ void ZoominatorController::onTick()
 	applyZoom(item, src, animT);
 }
 
+#if defined(_WIN32) || defined(__APPLE__)
 static ZoominatorController *g_ctl = nullptr;
+#endif
 
 static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantWin)
 {
