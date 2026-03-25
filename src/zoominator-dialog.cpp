@@ -34,7 +34,8 @@ static bool is_capture_source_id(const char *id)
 	if (!id)
 		return false;
 	return strcmp(id, "monitor_capture") == 0 || strcmp(id, "window_capture") == 0 ||
-	       strcmp(id, "game_capture") == 0;
+	       strcmp(id, "game_capture") == 0 || strcmp(id, "screen_capture") == 0 ||
+	       strcmp(id, "display_capture") == 0 || strcmp(id, "macos_screen_capture") == 0;
 }
 } // namespace
 
