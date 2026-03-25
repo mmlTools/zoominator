@@ -358,6 +358,15 @@ bool ZoominatorController::getCursorPos(int &x, int &y) const
 	x = (int)p.x;
 	y = (int)p.y;
 	return true;
+#elif defined(__APPLE__)
+	CGEventRef event = CGEventCreate(NULL);
+	if (!event)
+		return false;
+	CGPoint loc = CGEventGetLocation(event);
+	CFRelease(event);
+	x = (int)loc.x;
+	y = (int)loc.y;
+	return true;
 #else
 	(void)x;
 	(void)y;
@@ -365,7 +374,6 @@ bool ZoominatorController::getCursorPos(int &x, int &y) const
 #endif
 }
 
-#ifdef _WIN32
 static bool get_monitor_capture_selector(obs_source_t *src, QString &selector, int &monitorId, bool &hasId)
 {
 	selector.clear();
@@ -432,6 +440,7 @@ static bool get_monitor_capture_selector(obs_source_t *src, QString &selector, i
 	return (!selector.isEmpty()) || hasId;
 }
 
+#ifdef _WIN32
 struct MonitorInfoLite {
 	QString device;
 	RECT rc{};
@@ -727,7 +736,162 @@ static bool match_window_rect_for_source(obs_source_t *src, RECT &rcOut)
 	rcOut = rc;
 	return true;
 }
-#endif
+#endif // _WIN32
+
+#ifdef __APPLE__
+struct MonitorInfoLite {
+	CGDirectDisplayID displayID;
+	CGRect rc;
+};
+
+static std::vector<MonitorInfoLite> enum_monitors()
+{
+	std::vector<MonitorInfoLite> out;
+	uint32_t count = 0;
+	CGGetActiveDisplayList(0, nullptr, &count);
+	if (count == 0)
+		return out;
+	std::vector<CGDirectDisplayID> displays(count);
+	CGGetActiveDisplayList(count, displays.data(), &count);
+	for (uint32_t i = 0; i < count; i++) {
+		MonitorInfoLite m;
+		m.displayID = displays[i];
+		m.rc = CGDisplayBounds(displays[i]);
+		out.push_back(m);
+	}
+	return out;
+}
+
+static bool match_monitor_rect(obs_source_t *src, CGRect &rcOut)
+{
+	auto mons = enum_monitors();
+	if (mons.empty())
+		return false;
+
+	obs_data_t *s = obs_source_get_settings(src);
+	if (s) {
+		// macOS screen_capture uses "display_uuid" or "display" (index).
+		const char *uuid = obs_data_get_string(s, "display_uuid");
+		if (uuid && *uuid) {
+			// Match UUID against CGDisplayCreateUUIDFromDisplayID.
+			for (auto &m : mons) {
+				CFUUIDRef duuid = CGDisplayCreateUUIDFromDisplayID(m.displayID);
+				if (duuid) {
+					CFStringRef uuidStr = CFUUIDCreateString(kCFAllocatorDefault, duuid);
+					CFRelease(duuid);
+					if (uuidStr) {
+						char buf[128];
+						if (CFStringGetCString(uuidStr, buf, sizeof(buf), kCFStringEncodingUTF8)) {
+							if (strcasecmp(buf, uuid) == 0) {
+								CFRelease(uuidStr);
+								obs_data_release(s);
+								rcOut = m.rc;
+								return true;
+							}
+						}
+						CFRelease(uuidStr);
+					}
+				}
+			}
+		}
+
+		// Try numeric display index (0-based).
+		if (obs_data_has_user_value(s, "display")) {
+			int idx = (int)obs_data_get_int(s, "display");
+			if (idx >= 0 && idx < (int)mons.size()) {
+				obs_data_release(s);
+				rcOut = mons[(size_t)idx].rc;
+				return true;
+			}
+		}
+
+		obs_data_release(s);
+	}
+
+	// Also try the generic selector lookup (covers display_capture / older sources).
+	QString selector;
+	int monId = -1;
+	bool hasId = false;
+	if (get_monitor_capture_selector(src, selector, monId, hasId) && hasId) {
+		CGDirectDisplayID wantId = (CGDirectDisplayID)monId;
+		for (auto &m : mons) {
+			if (m.displayID == wantId) {
+				rcOut = m.rc;
+				return true;
+			}
+		}
+	}
+
+	// Fallback: if single monitor, use it.
+	if (mons.size() == 1) {
+		rcOut = mons[0].rc;
+		return true;
+	}
+
+	return false;
+}
+
+static bool match_window_rect_for_source(obs_source_t *src, CGRect &rcOut)
+{
+	obs_data_t *s = obs_source_get_settings(src);
+	if (!s)
+		return false;
+
+	// macOS screen_capture may store the window as a numeric ID.
+	int64_t windowID = obs_data_get_int(s, "window");
+	if (windowID == 0)
+		windowID = obs_data_get_int(s, "window_id");
+	const char *ownerName = obs_data_get_string(s, "owner_name");
+	obs_data_release(s);
+
+	CFArrayRef windowList = CGWindowListCopyWindowInfo(
+		kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+	if (!windowList)
+		return false;
+
+	bool found = false;
+	CFIndex count = CFArrayGetCount(windowList);
+	for (CFIndex i = 0; i < count && !found; i++) {
+		CFDictionaryRef dict = (CFDictionaryRef)CFArrayGetValueAtIndex(windowList, i);
+
+		// Match by window ID if we have one.
+		if (windowID != 0) {
+			CFNumberRef numRef = (CFNumberRef)CFDictionaryGetValue(dict, kCGWindowNumber);
+			if (numRef) {
+				int64_t wid = 0;
+				CFNumberGetValue(numRef, kCFNumberSInt64Type, &wid);
+				if (wid == windowID) {
+					CFDictionaryRef boundsDict =
+						(CFDictionaryRef)CFDictionaryGetValue(dict, kCGWindowBounds);
+					if (boundsDict && CGRectMakeWithDictionaryRepresentation(boundsDict, &rcOut))
+						found = true;
+				}
+			}
+			continue;
+		}
+
+		// Match by owner name.
+		if (ownerName && *ownerName) {
+			CFStringRef owner = (CFStringRef)CFDictionaryGetValue(dict, kCGWindowOwnerName);
+			if (owner) {
+				char buf[256];
+				if (CFStringGetCString(owner, buf, sizeof(buf), kCFStringEncodingUTF8)) {
+					if (strcmp(buf, ownerName) == 0) {
+						CFDictionaryRef boundsDict =
+							(CFDictionaryRef)CFDictionaryGetValue(dict, kCGWindowBounds);
+						if (boundsDict &&
+						    CGRectMakeWithDictionaryRepresentation(boundsDict, &rcOut))
+							found = true;
+					}
+				}
+			}
+		}
+	}
+
+	CFRelease(windowList);
+	return found;
+}
+#endif // __APPLE__
 
 bool ZoominatorController::mapCursorToSourcePixels(obs_source_t *src, int cursorX, int cursorY, float &sx, float &sy,
 						   bool &cursorInside) const
@@ -820,6 +984,65 @@ if (sw == 0 || sh == 0)
 sx = (float)(relX * (double)sw);
 sy = (float)(relY * (double)sh);
 return true;
+#elif defined(__APPLE__)
+	CGRect rc;
+	bool haveRect = false;
+
+	// macOS screen_capture is a unified source: type 0=display, 1=window, 2=application.
+	// Determine actual capture mode from the source settings.
+	const bool isUnifiedScreenCap = (strcmp(id, "screen_capture") == 0 || strcmp(id, "macos_screen_capture") == 0);
+	int captureType = -1;
+	if (isUnifiedScreenCap) {
+		obs_data_t *props = obs_source_get_settings(src);
+		if (props) {
+			captureType = (int)obs_data_get_int(props, "type");
+			obs_data_release(props);
+		}
+	}
+
+	const bool isDisplayCap = (isUnifiedScreenCap && captureType == 0) || strcmp(id, "display_capture") == 0 ||
+				  strcmp(id, "monitor_capture") == 0;
+	const bool isWindowCap = (isUnifiedScreenCap && captureType == 1) || strcmp(id, "window_capture") == 0;
+
+	if (isDisplayCap) {
+		haveRect = match_monitor_rect(src, rc);
+	} else if (isWindowCap || (isUnifiedScreenCap && captureType >= 1)) {
+		haveRect = match_window_rect_for_source(src, rc);
+	}
+
+	if (!haveRect) {
+		if (isDisplayCap)
+			return false;
+		// Fallback: main display.
+		rc = CGDisplayBounds(CGMainDisplayID());
+		haveRect = (rc.size.width > 0 && rc.size.height > 0);
+		if (!haveRect)
+			return false;
+	}
+
+	const int w = (int)rc.size.width;
+	const int h = (int)rc.size.height;
+	if (w <= 0 || h <= 0)
+		return false;
+
+	cursorInside = CGRectContainsPoint(rc, CGPointMake(cursorX, cursorY));
+
+	const int rcX = (int)rc.origin.x;
+	const int rcY = (int)rc.origin.y;
+	const int clampedX = std::max(rcX, std::min(cursorX, rcX + w - 1));
+	const int clampedY = std::max(rcY, std::min(cursorY, rcY + h - 1));
+
+	const double relX = (clampedX - rcX) / (double)w;
+	const double relY = (clampedY - rcY) / (double)h;
+
+	const uint32_t sw = obs_source_get_width(src);
+	const uint32_t sh = obs_source_get_height(src);
+	if (sw == 0 || sh == 0)
+		return false;
+
+	sx = (float)(relX * (double)sw);
+	sy = (float)(relY * (double)sh);
+	return true;
 #else
 	(void)cursorX;
 	(void)cursorY;
@@ -1045,7 +1268,6 @@ void ZoominatorController::onTick()
 	applyZoom(item, src, animT);
 }
 
-#ifdef _WIN32
 static ZoominatorController *g_ctl = nullptr;
 
 static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantWin)
@@ -1083,7 +1305,7 @@ static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantW
 	return true;
 }
 
-
+#ifdef _WIN32
 static inline bool is_modifier_vk(int vk)
 {
 	switch (vk) {
@@ -1119,7 +1341,6 @@ static inline bool is_wanted_modifier_vk(int vk, const ZoominatorController *ctl
 	return false;
 }
 
-#ifdef _WIN32
 static bool vk_matches(int pressedVk, int wantVk)
 {
 	if (pressedVk == wantVk)
@@ -1138,7 +1359,6 @@ static bool vk_matches(int pressedVk, int wantVk)
 
 	return false;
 }
-#endif
 
 LRESULT CALLBACK ZoominatorController::kb_hook_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
@@ -1230,15 +1450,160 @@ LRESULT CALLBACK ZoominatorController::mouse_hook_proc(int nCode, WPARAM wParam,
 	}
 	return CallNextHookEx((HHOOK)g_ctl->mouseHook, nCode, wParam, lParam);
 }
-#endif
+#endif // _WIN32
+
+#ifdef __APPLE__
+static inline bool is_modifier_vk(int vk)
+{
+	return vk == kVK_Control || vk == kVK_RightControl || vk == kVK_Option || vk == kVK_RightOption ||
+	       vk == kVK_Shift || vk == kVK_RightShift || vk == kVK_Command || vk == kVK_RightCommand;
+}
+
+static inline bool is_wanted_modifier_vk(int vk, const ZoominatorController *ctl)
+{
+	if (!ctl)
+		return false;
+	if (ctl->modCtrl && (vk == kVK_Control || vk == kVK_RightControl))
+		return true;
+	if (ctl->modAlt && (vk == kVK_Option || vk == kVK_RightOption))
+		return true;
+	if (ctl->modShift && (vk == kVK_Shift || vk == kVK_RightShift))
+		return true;
+	if (ctl->modWin && (vk == kVK_Command || vk == kVK_RightCommand))
+		return true;
+	return false;
+}
+
+static bool vk_matches(int pressedVk, int wantVk)
+{
+	if (pressedVk == wantVk)
+		return true;
+	// Treat numpad digits as equivalent to number row.
+	if (wantVk >= kVK_ANSI_Keypad0 && wantVk <= kVK_ANSI_Keypad9) {
+		static const int numRow[] = {kVK_ANSI_0, kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4,
+					     kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9};
+		return pressedVk == numRow[wantVk - kVK_ANSI_Keypad0];
+	}
+	return false;
+}
+
+static bool mac_mouse_button_matches(CGEventType type, int64_t buttonNumber, const QString &want)
+{
+	// buttonNumber: 0=left, 1=right, 2=middle, 3=X1, 4=X2
+	const bool isDown = (type == kCGEventLeftMouseDown || type == kCGEventRightMouseDown || type == kCGEventOtherMouseDown);
+	const bool isUp = (type == kCGEventLeftMouseUp || type == kCGEventRightMouseUp || type == kCGEventOtherMouseUp);
+	if (!isDown && !isUp)
+		return false;
+
+	if (want == "left")
+		return buttonNumber == 0;
+	if (want == "right")
+		return buttonNumber == 1;
+	if (want == "middle")
+		return buttonNumber == 2;
+	if (want == "x1")
+		return buttonNumber == 3;
+	if (want == "x2")
+		return buttonNumber == 4;
+	return false;
+}
+
+CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event,
+						  void *refcon)
+{
+	(void)proxy;
+	auto *ctl = static_cast<ZoominatorController *>(refcon);
+	if (!ctl)
+		return event;
+
+	// Re-enable tap if macOS disabled it (happens after timeout).
+	if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+		if (ctl->eventTap)
+			CGEventTapEnable(ctl->eventTap, true);
+		return event;
+	}
+
+	// --- Keyboard events ---
+	if (ctl->triggerType == "keyboard" && ctl->hkValid) {
+		if (type == kCGEventKeyDown || type == kCGEventKeyUp) {
+			const int keycode = (int)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+			const bool down = (type == kCGEventKeyDown);
+			const bool up = (type == kCGEventKeyUp);
+
+			if (ctl->hotkeyVk == 0) {
+				// Modifier-only trigger mode — handled via kCGEventFlagsChanged below.
+				return event;
+			}
+
+			if (vk_matches(keycode, ctl->hotkeyVk)) {
+				if (mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin)) {
+					if (ctl->hotkeyMode == "toggle") {
+						if (down)
+							ctl->onTriggerDown();
+					} else {
+						if (down)
+							ctl->onTriggerDown();
+						if (up)
+							ctl->onTriggerUp();
+					}
+				}
+			}
+			return event;
+		}
+
+		if (type == kCGEventFlagsChanged) {
+			// For modifier-only triggers, detect press/release by checking flag state.
+			if (ctl->hotkeyVk == 0) {
+				const bool matchNow =
+					mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin);
+				if (ctl->hotkeyMode == "toggle") {
+					if (matchNow && !ctl->zoomPressed && !ctl->zoomLatched)
+						ctl->onTriggerDown();
+					else if (matchNow && ctl->zoomLatched)
+						ctl->onTriggerDown(); // toggle off
+				} else {
+					if (matchNow && !ctl->zoomPressed)
+						ctl->onTriggerDown();
+					if (!matchNow && ctl->zoomPressed)
+						ctl->onTriggerUp();
+				}
+			}
+			return event;
+		}
+	}
+
+	// --- Mouse events ---
+	if (ctl->triggerType == "mouse") {
+		const bool isDown = (type == kCGEventLeftMouseDown || type == kCGEventRightMouseDown ||
+				     type == kCGEventOtherMouseDown);
+		const bool isUp = (type == kCGEventLeftMouseUp || type == kCGEventRightMouseUp ||
+				   type == kCGEventOtherMouseUp);
+
+		if (isDown || isUp) {
+			const int64_t btn = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+			if (mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin)) {
+				if (mac_mouse_button_matches(type, btn, ctl->mouseButton)) {
+					if (ctl->hotkeyMode == "toggle") {
+						if (isDown)
+							ctl->onTriggerDown();
+					} else {
+						if (isDown)
+							ctl->onTriggerDown();
+						if (isUp)
+							ctl->onTriggerUp();
+					}
+				}
+			}
+		}
+	}
+
+	return event;
+}
+#endif // __APPLE__
 
 bool ZoominatorController::modsMatch() const
 {
-#ifdef _WIN32
 	return mods_current(modCtrl, modAlt, modShift, modWin);
-#else
-	return true;
-#endif
 }
 
 bool ZoominatorController::triggerMatchesMouse(unsigned int msg, unsigned short mouseData) const
@@ -1294,7 +1659,92 @@ void ZoominatorController::onTriggerUp()
 
 static int qtKeyToVk(int qtKey)
 {
-#ifndef _WIN32
+#if defined(__APPLE__)
+	// Carbon virtual keycodes are NOT sequential for letters/digits — use lookup tables.
+	if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z) {
+		static const int map[] = {kVK_ANSI_A, kVK_ANSI_B, kVK_ANSI_C, kVK_ANSI_D, kVK_ANSI_E, kVK_ANSI_F,
+					  kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_I, kVK_ANSI_J, kVK_ANSI_K, kVK_ANSI_L,
+					  kVK_ANSI_M, kVK_ANSI_N, kVK_ANSI_O, kVK_ANSI_P, kVK_ANSI_Q, kVK_ANSI_R,
+					  kVK_ANSI_S, kVK_ANSI_T, kVK_ANSI_U, kVK_ANSI_V, kVK_ANSI_W, kVK_ANSI_X,
+					  kVK_ANSI_Y, kVK_ANSI_Z};
+		return map[qtKey - Qt::Key_A];
+	}
+	if (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9) {
+		static const int map[] = {kVK_ANSI_0, kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4,
+					  kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9};
+		return map[qtKey - Qt::Key_0];
+	}
+	if (qtKey >= Qt::Key_F1 && qtKey <= Qt::Key_F20) {
+		static const int map[] = {kVK_F1,  kVK_F2,  kVK_F3,  kVK_F4,  kVK_F5,  kVK_F6,  kVK_F7,
+					  kVK_F8,  kVK_F9,  kVK_F10, kVK_F11, kVK_F12, kVK_F13, kVK_F14,
+					  kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20};
+		return map[qtKey - Qt::Key_F1];
+	}
+	switch (qtKey) {
+	case Qt::Key_Space:
+		return kVK_Space;
+	case Qt::Key_Return:
+	case Qt::Key_Enter:
+		return kVK_Return;
+	case Qt::Key_Escape:
+		return kVK_Escape;
+	case Qt::Key_Tab:
+		return kVK_Tab;
+	case Qt::Key_Backspace:
+		return kVK_Delete; // kVK_Delete is Backspace on macOS
+	case Qt::Key_Delete:
+		return kVK_ForwardDelete;
+	case Qt::Key_Left:
+		return kVK_LeftArrow;
+	case Qt::Key_Right:
+		return kVK_RightArrow;
+	case Qt::Key_Up:
+		return kVK_UpArrow;
+	case Qt::Key_Down:
+		return kVK_DownArrow;
+	case Qt::Key_Home:
+		return kVK_Home;
+	case Qt::Key_End:
+		return kVK_End;
+	case Qt::Key_PageUp:
+		return kVK_PageUp;
+	case Qt::Key_PageDown:
+		return kVK_PageDown;
+	case Qt::Key_CapsLock:
+		return kVK_CapsLock;
+	case Qt::Key_Shift:
+		return kVK_Shift;
+	case Qt::Key_Control:
+		return kVK_Control;
+	case Qt::Key_Alt:
+		return kVK_Option;
+	case Qt::Key_Meta:
+		return kVK_Command;
+	case Qt::Key_Semicolon:
+		return kVK_ANSI_Semicolon;
+	case Qt::Key_Equal:
+		return kVK_ANSI_Equal;
+	case Qt::Key_Comma:
+		return kVK_ANSI_Comma;
+	case Qt::Key_Minus:
+		return kVK_ANSI_Minus;
+	case Qt::Key_Period:
+		return kVK_ANSI_Period;
+	case Qt::Key_Slash:
+		return kVK_ANSI_Slash;
+	case Qt::Key_QuoteLeft:
+		return kVK_ANSI_Grave;
+	case Qt::Key_BracketLeft:
+		return kVK_ANSI_LeftBracket;
+	case Qt::Key_Backslash:
+		return kVK_ANSI_Backslash;
+	case Qt::Key_BracketRight:
+		return kVK_ANSI_RightBracket;
+	default:
+		break;
+	}
+	return 0;
+#elif !defined(_WIN32)
 	(void)qtKey;
 	return 0;
 #else
@@ -1426,8 +1876,12 @@ void ZoominatorController::rebuildTriggersFromSettings()
 						    hotkeyVk == VK_MENU || hotkeyVk == VK_LMENU || hotkeyVk == VK_RMENU ||
 						    hotkeyVk == VK_SHIFT || hotkeyVk == VK_LSHIFT || hotkeyVk == VK_RSHIFT ||
 						    hotkeyVk == VK_LWIN || hotkeyVk == VK_RWIN);
+#elif defined(__APPLE__)
+			const bool keyIsModifier = (hotkeyVk == kVK_Control || hotkeyVk == kVK_RightControl ||
+						    hotkeyVk == kVK_Option || hotkeyVk == kVK_RightOption ||
+						    hotkeyVk == kVK_Shift || hotkeyVk == kVK_RightShift ||
+						    hotkeyVk == kVK_Command || hotkeyVk == kVK_RightCommand);
 #else
-			// Non-Windows: qtKeyToVk() returns 0, so detect "single-modifier hotkeys" directly from the Qt key.
 			const bool keyIsModifier = (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt || key == Qt::Key_Meta);
 #endif
 			if (noMods && keyIsModifier) {
@@ -1437,11 +1891,15 @@ void ZoominatorController::rebuildTriggersFromSettings()
 				modAlt = (hotkeyVk == VK_MENU || hotkeyVk == VK_LMENU || hotkeyVk == VK_RMENU);
 				modShift = (hotkeyVk == VK_SHIFT || hotkeyVk == VK_LSHIFT || hotkeyVk == VK_RSHIFT);
 				modWin = (hotkeyVk == VK_LWIN || hotkeyVk == VK_RWIN);
+#elif defined(__APPLE__)
+				modCtrl = (hotkeyVk == kVK_Control || hotkeyVk == kVK_RightControl);
+				modAlt = (hotkeyVk == kVK_Option || hotkeyVk == kVK_RightOption);
+				modShift = (hotkeyVk == kVK_Shift || hotkeyVk == kVK_RightShift);
+				modWin = (hotkeyVk == kVK_Command || hotkeyVk == kVK_RightCommand);
 #else
 				modCtrl = (key == Qt::Key_Control);
 				modAlt = (key == Qt::Key_Alt);
 				modShift = (key == Qt::Key_Shift);
-				// Treat Qt::Key_Meta as "Win/Super" on Linux and "Command" on macOS.
 				modWin = (key == Qt::Key_Meta);
 #endif
 				hotkeyVk = 0;
@@ -1481,6 +1939,27 @@ void ZoominatorController::installHooks()
 	if (!mouseHook) {
 		mouseHook = (void *)SetWindowsHookExW(WH_MOUSE_LL, mouse_hook_proc, GetModuleHandleW(nullptr), 0);
 	}
+#elif defined(__APPLE__)
+	g_ctl = this;
+
+	if (!eventTap) {
+		CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) |
+				   CGEventMaskBit(kCGEventFlagsChanged) | CGEventMaskBit(kCGEventLeftMouseDown) |
+				   CGEventMaskBit(kCGEventLeftMouseUp) | CGEventMaskBit(kCGEventRightMouseDown) |
+				   CGEventMaskBit(kCGEventRightMouseUp) | CGEventMaskBit(kCGEventOtherMouseDown) |
+				   CGEventMaskBit(kCGEventOtherMouseUp);
+		eventTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly, mask,
+					    eventTapCallback, this);
+		if (eventTap) {
+			runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
+			CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, kCFRunLoopCommonModes);
+			CGEventTapEnable(eventTap, true);
+		} else {
+			blog(LOG_WARNING,
+			     "[Zoominator] Failed to create CGEventTap. "
+			     "Grant Accessibility permission to OBS in System Settings > Privacy & Security > Accessibility.");
+		}
+	}
 #endif
 }
 
@@ -1494,6 +1973,18 @@ void ZoominatorController::uninstallHooks()
 	if (mouseHook) {
 		UnhookWindowsHookEx((HHOOK)mouseHook);
 		mouseHook = nullptr;
+	}
+	g_ctl = nullptr;
+#elif defined(__APPLE__)
+	if (runLoopSource) {
+		CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, kCFRunLoopCommonModes);
+		CFRelease(runLoopSource);
+		runLoopSource = nullptr;
+	}
+	if (eventTap) {
+		CGEventTapEnable(eventTap, false);
+		CFRelease(eventTap);
+		eventTap = nullptr;
 	}
 	g_ctl = nullptr;
 #endif

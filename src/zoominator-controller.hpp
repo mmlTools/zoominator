@@ -11,6 +11,9 @@
 #	define WIN32_LEAN_AND_MEAN
 #	include <Windows.h>
 #	undef WIN32_LEAN_AND_MEAN
+#elif defined(__APPLE__)
+#	include <CoreFoundation/CoreFoundation.h>
+#	include <CoreGraphics/CoreGraphics.h>
 #endif
 
 class ZoominatorDialog;
@@ -134,5 +137,10 @@ private:
 
 	void *keyboardHook = nullptr;
 	void *mouseHook = nullptr;
+#elif defined(__APPLE__)
+	static CGEventRef eventTapCallback(CGEventTapProxy proxy, CGEventType type,
+					   CGEventRef event, void *refcon);
+	CFMachPortRef eventTap = nullptr;
+	CFRunLoopSourceRef runLoopSource = nullptr;
 #endif
 };
