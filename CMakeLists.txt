@@ -40,6 +40,14 @@ if(ENABLE_QT)
   )
 endif()
 
+if(APPLE)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
+    "-framework ApplicationServices"
+    "-framework CoreFoundation"
+    "-framework CoreGraphics"
+  )
+endif()
+
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
   src/plugin-main.cpp
   src/zoominator-controller.cpp
