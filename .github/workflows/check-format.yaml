@@ -1,0 +1,56 @@
+name: Check Code Formatting 🛠️
+on:
+  workflow_call:
+
+jobs:
+  clang-format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Make scripts executable
+        run: |
+          chmod +x .github/scripts/build-macos || true
+          chmod +x .github/scripts/build-ubuntu || true
+          chmod +x .github/scripts/package-macos || true
+          chmod +x .github/scripts/package-ubuntu || true
+          chmod +x .github/scripts/utils.zsh/* || true
+          chmod +x .functions/* || true
+          chmod +x .run-format.zsh || true
+          chmod +x run-clang-format || true
+          chmod +x run-gersemi || true
+          chmod +x run-swift-format || true
+
+      - name: clang-format check 🐉
+        id: clang-format
+        uses: ./.github/actions/run-clang-format
+        with:
+          failCondition: error
+
+  gersemi:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Make scripts executable
+        run: |
+          chmod +x .github/scripts/build-macos || true
+          chmod +x .github/scripts/build-ubuntu || true
+          chmod +x .github/scripts/package-macos || true
+          chmod +x .github/scripts/package-ubuntu || true
+          chmod +x .github/scripts/utils.zsh/* || true
+          chmod +x .functions/* || true
+          chmod +x .run-format.zsh || true
+          chmod +x run-clang-format || true
+          chmod +x run-gersemi || true
+          chmod +x run-swift-format || true
+
+      - name: gersemi Check 🎛️
+        id: gersemi
+        uses: ./.github/actions/run-gersemi
+        with:
+          failCondition: error
