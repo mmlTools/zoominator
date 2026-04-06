@@ -1565,7 +1565,6 @@ static bool vk_matches(int pressedVk, int wantVk)
 
 static bool mac_mouse_button_matches(CGEventType type, int64_t buttonNumber, const QString &want)
 {
-	// buttonNumber: 0=left, 1=right, 2=middle, 3=X1, 4=X2
 	const bool isDown = (type == kCGEventLeftMouseDown || type == kCGEventRightMouseDown || type == kCGEventOtherMouseDown);
 	const bool isUp = (type == kCGEventLeftMouseUp || type == kCGEventRightMouseUp || type == kCGEventOtherMouseUp);
 	if (!isDown && !isUp)
@@ -1592,18 +1591,15 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 	if (!ctl)
 		return event;
 
-	// Re-enable tap if macOS disabled it (happens after timeout).
 	if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
 		if (ctl->eventTap)
 			CGEventTapEnable(ctl->eventTap, true);
 		return event;
 	}
 
-	// --- Keyboard events ---
 	if (type == kCGEventKeyDown || type == kCGEventKeyUp) {
 		const int keycode = (int)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
 		const bool down = (type == kCGEventKeyDown);
-		const bool up = (type == kCGEventKeyUp);
 
 		if (ctl->followToggleHkValid && down && ctl->followToggleHotkeyVk != 0 &&
 		    vk_matches(keycode, ctl->followToggleHotkeyVk) &&
@@ -1620,7 +1616,6 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 			const bool up = (type == kCGEventKeyUp);
 
 			if (ctl->hotkeyVk == 0) {
-				// Modifier-only trigger mode — handled via kCGEventFlagsChanged below.
 				return event;
 			}
 
@@ -1641,7 +1636,6 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 		}
 
 		if (type == kCGEventFlagsChanged) {
-			// For modifier-only triggers, detect press/release by checking flag state.
 			if (ctl->hotkeyVk == 0) {
 				const bool matchNow =
 					mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin);
@@ -1649,7 +1643,7 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 					if (matchNow && !ctl->zoomPressed && !ctl->zoomLatched)
 						ctl->onTriggerDown();
 					else if (matchNow && ctl->zoomLatched)
-						ctl->onTriggerDown(); // toggle off
+						ctl->onTriggerDown();
 				} else {
 					if (matchNow && !ctl->zoomPressed)
 						ctl->onTriggerDown();
@@ -1661,7 +1655,6 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 		}
 	}
 
-	// --- Mouse events ---
 	if (ctl->triggerType == "mouse") {
 		const bool isDown = (type == kCGEventLeftMouseDown || type == kCGEventRightMouseDown ||
 				     type == kCGEventOtherMouseDown);
