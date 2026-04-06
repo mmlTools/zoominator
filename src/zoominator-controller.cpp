@@ -28,6 +28,8 @@
 #include "zoominator-dialog.hpp"
 #include "zoominator-dock.hpp"
 
+static int qtKeyToVk(int qtKey);
+
 static inline double clampd(double v, double lo, double hi)
 {
 	if (v < lo)
@@ -149,6 +151,7 @@ void ZoominatorController::loadSettings()
 	animInMs = 180;
 	animOutMs = 180;
 	followMouse = true;
+	followMouseRuntimeEnabled = true;
 	followSpeed = 8.0;
 	portraitCover = true;
 	debug = false;
@@ -172,10 +175,68 @@ void ZoominatorController::loadSettings()
 	if (hotkeySequence.isEmpty())
 		hotkeySequence = QStringLiteral("Ctrl+F1");
 	hotkeyMode = getStr("hotkey_mode");
+	followToggleHotkeySequence = getStr("follow_toggle_hotkey");
 	if (hotkeyMode != "toggle")
 		hotkeyMode = "hold";
 
 	triggerType = getStr("trigger_type");
+	QKeySequence followSeq(followToggleHotkeySequence);
+	if (!followSeq.isEmpty()) {
+		const QKeyCombination kc = followSeq[0];
+		const auto mods = kc.keyboardModifiers();
+		const int key = int(kc.key());
+		followToggleHotkeyVk = qtKeyToVk(key);
+		followToggleModCtrl = mods.testFlag(Qt::ControlModifier);
+		followToggleModAlt = mods.testFlag(Qt::AltModifier);
+		followToggleModShift = mods.testFlag(Qt::ShiftModifier);
+		followToggleModWin = mods.testFlag(Qt::MetaModifier);
+
+#ifdef _WIN32
+		const bool keyIsModifier = (followToggleHotkeyVk == VK_CONTROL || followToggleHotkeyVk == VK_LCONTROL ||
+					    followToggleHotkeyVk == VK_RCONTROL || followToggleHotkeyVk == VK_MENU ||
+					    followToggleHotkeyVk == VK_LMENU || followToggleHotkeyVk == VK_RMENU ||
+					    followToggleHotkeyVk == VK_SHIFT || followToggleHotkeyVk == VK_LSHIFT ||
+					    followToggleHotkeyVk == VK_RSHIFT || followToggleHotkeyVk == VK_LWIN ||
+					    followToggleHotkeyVk == VK_RWIN);
+#elif defined(__APPLE__)
+		const bool keyIsModifier =
+			(followToggleHotkeyVk == kVK_Control || followToggleHotkeyVk == kVK_RightControl ||
+			 followToggleHotkeyVk == kVK_Option || followToggleHotkeyVk == kVK_RightOption ||
+			 followToggleHotkeyVk == kVK_Shift || followToggleHotkeyVk == kVK_RightShift ||
+			 followToggleHotkeyVk == kVK_Command || followToggleHotkeyVk == kVK_RightCommand);
+#else
+		const bool keyIsModifier = false;
+#endif
+
+		if (keyIsModifier && mods == Qt::NoModifier) {
+#ifdef _WIN32
+			followToggleModCtrl = (followToggleHotkeyVk == VK_CONTROL ||
+					       followToggleHotkeyVk == VK_LCONTROL ||
+					       followToggleHotkeyVk == VK_RCONTROL);
+			followToggleModAlt = (followToggleHotkeyVk == VK_MENU || followToggleHotkeyVk == VK_LMENU ||
+					      followToggleHotkeyVk == VK_RMENU);
+			followToggleModShift = (followToggleHotkeyVk == VK_SHIFT || followToggleHotkeyVk == VK_LSHIFT ||
+						followToggleHotkeyVk == VK_RSHIFT);
+			followToggleModWin = (followToggleHotkeyVk == VK_LWIN || followToggleHotkeyVk == VK_RWIN);
+#elif defined(__APPLE__)
+			followToggleModCtrl =
+				(followToggleHotkeyVk == kVK_Control || followToggleHotkeyVk == kVK_RightControl);
+			followToggleModAlt =
+				(followToggleHotkeyVk == kVK_Option || followToggleHotkeyVk == kVK_RightOption);
+			followToggleModShift =
+				(followToggleHotkeyVk == kVK_Shift || followToggleHotkeyVk == kVK_RightShift);
+			followToggleModWin =
+				(followToggleHotkeyVk == kVK_Command || followToggleHotkeyVk == kVK_RightCommand);
+#else
+			followToggleHotkeyVk = 0;
+#endif
+		}
+
+		followToggleHkValid = (followToggleHotkeyVk != 0) &&
+				      (followToggleModCtrl || followToggleModAlt || followToggleModShift ||
+				       followToggleModWin || key != 0);
+	}
+
 	if (triggerType != "mouse")
 		triggerType = "keyboard";
 
@@ -209,6 +270,7 @@ void ZoominatorController::loadSettings()
 
 	if (obs_data_has_user_value(data, "follow_mouse"))
 		followMouse = obs_data_get_bool(data, "follow_mouse");
+	followMouseRuntimeEnabled = true;
 	if (obs_data_has_user_value(data, "follow_speed"))
 		followSpeed = obs_data_get_double(data, "follow_speed");
 	if (followSpeed <= 0.1)
@@ -245,6 +307,7 @@ void ZoominatorController::saveSettings()
 	obs_data_set_string(data, "source_name", sourceName.toUtf8().constData());
 	obs_data_set_string(data, "hotkey", hotkeySequence.toUtf8().constData());
 	obs_data_set_string(data, "hotkey_mode", hotkeyMode.toUtf8().constData());
+	obs_data_set_string(data, "follow_toggle_hotkey", followToggleHotkeySequence.toUtf8().constData());
 
 	obs_data_set_string(data, "trigger_type", triggerType.toUtf8().constData());
 	obs_data_set_string(data, "mouse_button", mouseButton.toUtf8().constData());
@@ -257,6 +320,7 @@ void ZoominatorController::saveSettings()
 	obs_data_set_int(data, "anim_in_ms", animInMs);
 	obs_data_set_int(data, "anim_out_ms", animOutMs);
 	obs_data_set_bool(data, "follow_mouse", followMouse);
+	followMouseRuntimeEnabled = true;
 	obs_data_set_double(data, "follow_speed", followSpeed);
 	obs_data_set_bool(data, "portrait_cover", portraitCover);
 	obs_data_set_bool(data, "debug", debug);
@@ -1116,7 +1180,7 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 	float fx = (float)sw * 0.5f;
 	float fy = (float)sh * 0.5f;
 
-	if (followMouse) {
+	if (followMouse && followMouseRuntimeEnabled) {
 		int cx = 0, cy = 0;
 		float mx = 0.f, my = 0.f;
 		bool inside = false;
@@ -1364,7 +1428,7 @@ static bool vk_matches(int pressedVk, int wantVk)
 
 LRESULT CALLBACK ZoominatorController::kb_hook_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
-	if (nCode == HC_ACTION && g_ctl && g_ctl->hkValid && g_ctl->triggerType == "keyboard") {
+	if (nCode == HC_ACTION && g_ctl) {
 		const auto *k = reinterpret_cast<KBDLLHOOKSTRUCT *>(lParam);
 		const bool down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
 		const bool up = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
@@ -1373,6 +1437,16 @@ LRESULT CALLBACK ZoominatorController::kb_hook_proc(int nCode, WPARAM wParam, LP
 			return CallNextHookEx((HHOOK)g_ctl->keyboardHook, nCode, wParam, lParam);
 
 		const int vk = (int)k->vkCode;
+
+		if (g_ctl->followToggleHkValid && down && g_ctl->followToggleHotkeyVk != 0 &&
+		    vk_matches(vk, g_ctl->followToggleHotkeyVk) &&
+		    mods_current(g_ctl->followToggleModCtrl, g_ctl->followToggleModAlt, g_ctl->followToggleModShift,
+				 g_ctl->followToggleModWin)) {
+			g_ctl->toggleFollowMouseRuntime();
+		}
+
+		if (!(g_ctl->hkValid && g_ctl->triggerType == "keyboard"))
+			return CallNextHookEx((HHOOK)g_ctl->keyboardHook, nCode, wParam, lParam);
 
 		// --- Modifier-only trigger mode ---
 		// If no "main" key is configured (hotkeyVk==0), we allow triggers on modifier
@@ -1526,6 +1600,19 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 	}
 
 	// --- Keyboard events ---
+	if (type == kCGEventKeyDown || type == kCGEventKeyUp) {
+		const int keycode = (int)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+		const bool down = (type == kCGEventKeyDown);
+		const bool up = (type == kCGEventKeyUp);
+
+		if (ctl->followToggleHkValid && down && ctl->followToggleHotkeyVk != 0 &&
+		    vk_matches(keycode, ctl->followToggleHotkeyVk) &&
+		    mods_current(ctl->followToggleModCtrl, ctl->followToggleModAlt, ctl->followToggleModShift,
+				 ctl->followToggleModWin)) {
+			ctl->toggleFollowMouseRuntime();
+		}
+	}
+
 	if (ctl->triggerType == "keyboard" && ctl->hkValid) {
 		if (type == kCGEventKeyDown || type == kCGEventKeyUp) {
 			const int keycode = (int)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
@@ -1657,6 +1744,20 @@ void ZoominatorController::onTriggerUp()
 		blog(LOG_INFO, "[Zoominator] Trigger UP");
 	zoomPressed = false;
 	startZoomOut();
+}
+
+void ZoominatorController::toggleFollowMouseRuntime()
+{
+	if (!followMouse)
+		return;
+
+	followMouseRuntimeEnabled = !followMouseRuntimeEnabled;
+	if (!followMouseRuntimeEnabled)
+		followHasPos = true;
+
+	if (debug) {
+		blog(LOG_INFO, "[Zoominator] Follow mouse %s", followMouseRuntimeEnabled ? "ENABLED" : "DISABLED");
+	}
 }
 
 static int qtKeyToVk(int qtKey)
@@ -1850,6 +1951,69 @@ void ZoominatorController::rebuildTriggersFromSettings()
 {
 	hkValid = false;
 	hotkeyVk = 0;
+	followToggleHkValid = false;
+	followToggleHotkeyVk = 0;
+	followToggleModCtrl = false;
+	followToggleModAlt = false;
+	followToggleModShift = false;
+	followToggleModWin = false;
+
+	QKeySequence followSeq(followToggleHotkeySequence);
+	if (!followSeq.isEmpty()) {
+		const QKeyCombination kc = followSeq[0];
+		const auto mods = kc.keyboardModifiers();
+		const int key = int(kc.key());
+		followToggleHotkeyVk = qtKeyToVk(key);
+		followToggleModCtrl = mods.testFlag(Qt::ControlModifier);
+		followToggleModAlt = mods.testFlag(Qt::AltModifier);
+		followToggleModShift = mods.testFlag(Qt::ShiftModifier);
+		followToggleModWin = mods.testFlag(Qt::MetaModifier);
+
+#ifdef _WIN32
+		const bool keyIsModifier = (followToggleHotkeyVk == VK_CONTROL || followToggleHotkeyVk == VK_LCONTROL ||
+					    followToggleHotkeyVk == VK_RCONTROL || followToggleHotkeyVk == VK_MENU ||
+					    followToggleHotkeyVk == VK_LMENU || followToggleHotkeyVk == VK_RMENU ||
+					    followToggleHotkeyVk == VK_SHIFT || followToggleHotkeyVk == VK_LSHIFT ||
+					    followToggleHotkeyVk == VK_RSHIFT || followToggleHotkeyVk == VK_LWIN ||
+					    followToggleHotkeyVk == VK_RWIN);
+#elif defined(__APPLE__)
+		const bool keyIsModifier =
+			(followToggleHotkeyVk == kVK_Control || followToggleHotkeyVk == kVK_RightControl ||
+			 followToggleHotkeyVk == kVK_Option || followToggleHotkeyVk == kVK_RightOption ||
+			 followToggleHotkeyVk == kVK_Shift || followToggleHotkeyVk == kVK_RightShift ||
+			 followToggleHotkeyVk == kVK_Command || followToggleHotkeyVk == kVK_RightCommand);
+#else
+		const bool keyIsModifier = false;
+#endif
+
+		if (keyIsModifier && mods == Qt::NoModifier) {
+#ifdef _WIN32
+			followToggleModCtrl = (followToggleHotkeyVk == VK_CONTROL ||
+					       followToggleHotkeyVk == VK_LCONTROL ||
+					       followToggleHotkeyVk == VK_RCONTROL);
+			followToggleModAlt = (followToggleHotkeyVk == VK_MENU || followToggleHotkeyVk == VK_LMENU ||
+					      followToggleHotkeyVk == VK_RMENU);
+			followToggleModShift = (followToggleHotkeyVk == VK_SHIFT || followToggleHotkeyVk == VK_LSHIFT ||
+						followToggleHotkeyVk == VK_RSHIFT);
+			followToggleModWin = (followToggleHotkeyVk == VK_LWIN || followToggleHotkeyVk == VK_RWIN);
+#elif defined(__APPLE__)
+			followToggleModCtrl =
+				(followToggleHotkeyVk == kVK_Control || followToggleHotkeyVk == kVK_RightControl);
+			followToggleModAlt =
+				(followToggleHotkeyVk == kVK_Option || followToggleHotkeyVk == kVK_RightOption);
+			followToggleModShift =
+				(followToggleHotkeyVk == kVK_Shift || followToggleHotkeyVk == kVK_RightShift);
+			followToggleModWin =
+				(followToggleHotkeyVk == kVK_Command || followToggleHotkeyVk == kVK_RightCommand);
+#else
+			followToggleHotkeyVk = 0;
+#endif
+		}
+
+		followToggleHkValid = (followToggleHotkeyVk != 0) &&
+				      (followToggleModCtrl || followToggleModAlt || followToggleModShift ||
+				       followToggleModWin || key != 0);
+	}
 
 	if (triggerType != "mouse")
 		triggerType = "keyboard";

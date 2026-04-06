@@ -33,9 +33,10 @@ public:
 	void loadSettings();
 	void notifySettingsChanged();
 
-	QString sourceName;        
-	QString hotkeySequence;    
-	QString hotkeyMode;        
+	QString sourceName;
+	QString hotkeySequence;
+	QString hotkeyMode;
+	QString followToggleHotkeySequence;
 
 	QString triggerType;       
 	QString mouseButton;       
@@ -48,6 +49,7 @@ public:
 	int animInMs = 180;
 	int animOutMs = 180;
 	bool followMouse = true;
+	bool followMouseRuntimeEnabled = true;
 	double followSpeed = 8.0; 
 	bool portraitCover = true;
 	bool debug = false;
@@ -78,6 +80,7 @@ private:
 	void uninstallHooks();
 	void onTriggerDown();
 	void onTriggerUp();
+	void toggleFollowMouseRuntime();
 	bool triggerMatchesKeyboard(int vk) const;
 	bool triggerMatchesMouse(unsigned int msg, unsigned short mouseData) const;
 	bool modsMatch() const;
@@ -128,6 +131,12 @@ private:
 	// Parsed keyboard trigger (Windows VK + modifiers)
 	int hotkeyVk = 0;
 	bool hkValid = false;
+	int followToggleHotkeyVk = 0;
+	bool followToggleHkValid = false;
+	bool followToggleModCtrl = false;
+	bool followToggleModAlt = false;
+	bool followToggleModShift = false;
+	bool followToggleModWin = false;
 
 #ifdef _WIN32
 	// Low-level hook callbacks must be plain functions. Declaring them as

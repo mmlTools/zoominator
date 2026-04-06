@@ -24,6 +24,7 @@ private slots:
 	void applyToController();
 	void testZoom();
 	void clearHotkey();
+	void clearFollowToggleHotkey();
 
 private:
 	void buildUi();
@@ -42,6 +43,8 @@ private:
 
 	QKeySequenceEdit *editHotkey = nullptr;
 	QPushButton *btnClearHotkey = nullptr;
+	QKeySequenceEdit *editFollowToggleHotkey = nullptr;
+	QPushButton *btnClearFollowToggleHotkey = nullptr;
 
 	QDoubleSpinBox *spZoom = nullptr;
 	QSpinBox *spIn = nullptr;

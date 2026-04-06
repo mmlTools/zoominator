@@ -102,6 +102,17 @@ void ZoominatorDialog::buildUi()
 	rowHot->addWidget(btnClearHotkey, 0);
 	trigLay->addWidget(rowHotkeyWidget);
 
+	auto *rowFollowToggleWidget = new QWidget(trigBox);
+	auto *rowFollowToggle = new QHBoxLayout(rowFollowToggleWidget);
+	rowFollowToggle->setContentsMargins(0, 0, 0, 0);
+	editFollowToggleHotkey = new QKeySequenceEdit(rowFollowToggleWidget);
+	btnClearFollowToggleHotkey = new QPushButton("Clear", rowFollowToggleWidget);
+	btnClearFollowToggleHotkey->setToolTip("Clear follow mouse toggle hotkey");
+	rowFollowToggle->addWidget(new QLabel("Follow Toggle Hotkey:", rowFollowToggleWidget));
+	rowFollowToggle->addWidget(editFollowToggleHotkey, 1);
+	rowFollowToggle->addWidget(btnClearFollowToggleHotkey, 0);
+	trigLay->addWidget(rowFollowToggleWidget);
+
 	rowMouseWidget = new QWidget(trigBox);
 	auto *rowMouse = new QHBoxLayout(rowMouseWidget);
 	rowMouse->setContentsMargins(0, 0, 0, 0);
@@ -192,6 +203,8 @@ void ZoominatorDialog::buildUi()
 	connect(btnApply, &QPushButton::clicked, this, &ZoominatorDialog::applyToController);
 	connect(btnTest, &QPushButton::clicked, this, &ZoominatorDialog::testZoom);
 	connect(btnClearHotkey, &QPushButton::clicked, this, &ZoominatorDialog::clearHotkey);
+	connect(btnClearFollowToggleHotkey, &QPushButton::clicked, this,
+		&ZoominatorDialog::clearFollowToggleHotkey);
 
 	connect(cmbTrigger, &QComboBox::currentIndexChanged, this, [this](int) {
 		const QString trigger = cmbTrigger->currentData().toString();
@@ -278,6 +291,7 @@ void ZoominatorDialog::loadFromController()
 	chkWin->setChecked(c.modWin);
 
 	editHotkey->setKeySequence(QKeySequence(c.hotkeySequence));
+	editFollowToggleHotkey->setKeySequence(QKeySequence(c.followToggleHotkeySequence));
 
 	spZoom->setValue(c.zoomFactor);
 	spIn->setValue(c.animInMs);
@@ -317,6 +331,8 @@ void ZoominatorDialog::applyToController()
 	c.modWin = chkWin->isChecked();
 
 	c.hotkeySequence = editHotkey->keySequence().toString(QKeySequence::NativeText);
+	c.followToggleHotkeySequence =
+		editFollowToggleHotkey->keySequence().toString(QKeySequence::NativeText);
 
 	c.zoomFactor = spZoom->value();
 	c.animInMs = spIn->value();
@@ -327,7 +343,7 @@ void ZoominatorDialog::applyToController()
 	c.debug = chkDebug->isChecked();
 
 	c.saveSettings();
-	lblStatus->setText(QStringLiteral("Applied. Use your trigger to zoom."));
+	lblStatus->setText(QStringLiteral("Applied. Use your trigger to zoom. Use the follow toggle hotkey to freeze/unfreeze tracking."));
 }
 
 void ZoominatorDialog::testZoom()
@@ -339,4 +355,9 @@ void ZoominatorDialog::testZoom()
 void ZoominatorDialog::clearHotkey()
 {
 	editHotkey->setKeySequence(QKeySequence());
+}
+
+void ZoominatorDialog::clearFollowToggleHotkey()
+{
+	editFollowToggleHotkey->setKeySequence(QKeySequence());
 }
