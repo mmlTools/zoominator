@@ -9,6 +9,7 @@ class QKeySequenceEdit;
 class QLabel;
 class QPushButton;
 class QSpinBox;
+class QColor;
 
 class ZoominatorDialog final : public QDialog {
 	Q_OBJECT
@@ -25,11 +26,13 @@ private slots:
 	void testZoom();
 	void clearHotkey();
 	void clearFollowToggleHotkey();
+	void chooseMarkerColor();
 
 private:
 	void buildUi();
 	void loadFromController();
 	void populateSources();
+	void updateMarkerColorButton(const QColor &color);
 
 	QComboBox *cmbSource = nullptr;
 	QComboBox *cmbMode = nullptr;
@@ -52,6 +55,11 @@ private:
 	QCheckBox *chkFollow = nullptr;
 	QDoubleSpinBox *spFollowSpeed = nullptr;
 	QCheckBox *chkPortraitCover = nullptr;
+	QCheckBox *chkShowCursorMarker = nullptr;
+	QCheckBox *chkMarkerOnlyOnClick = nullptr;
+	QSpinBox *spMarkerSize = nullptr;
+	QSpinBox *spMarkerThickness = nullptr;
+	QPushButton *btnMarkerColor = nullptr;
 	QCheckBox *chkDebug = nullptr;
 
 	QLabel *lblStatus = nullptr;

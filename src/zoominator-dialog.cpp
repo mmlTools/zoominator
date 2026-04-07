@@ -6,6 +6,8 @@
 #include <obs.h>
 
 #include <QCheckBox>
+#include <QColor>
+#include <QColorDialog>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -63,27 +65,40 @@ void ZoominatorDialog::closeEvent(QCloseEvent *event)
 void ZoominatorDialog::buildUi()
 {
 	auto *root = new QVBoxLayout(this);
-	root->setContentsMargins(12, 12, 12, 12);
-	root->setSpacing(10);
+	root->setContentsMargins(10, 10, 10, 10);
+	root->setSpacing(8);
 
 	auto *topBox = new QGroupBox("Target", this);
-	auto *topLay = new QFormLayout(topBox);
+	auto *topLay = new QVBoxLayout(topBox);
+	topLay->setContentsMargins(8, 8, 8, 8);
+	topLay->setSpacing(6);
+
+	auto *rowTarget = new QHBoxLayout();
+	rowTarget->setSpacing(8);
 
 	cmbSource = new QComboBox(topBox);
-	cmbSource->setMinimumWidth(320);
-	topLay->addRow("Capture Source", cmbSource);
+	cmbSource->setMinimumWidth(260);
 
 	cmbMode = new QComboBox(topBox);
 	cmbMode->addItem("Hold (press=zoom, release=restore)", "hold");
 	cmbMode->addItem("Toggle (press=zoom, press again=restore)", "toggle");
-	topLay->addRow("Behavior", cmbMode);
 
+	rowTarget->addWidget(new QLabel("Capture Source", topBox));
+	rowTarget->addWidget(cmbSource, 1);
+	rowTarget->addSpacing(6);
+	rowTarget->addWidget(new QLabel("Behavior", topBox));
+	rowTarget->addWidget(cmbMode, 0);
+
+	topLay->addLayout(rowTarget);
 	root->addWidget(topBox);
 
 	auto *trigBox = new QGroupBox("Trigger", this);
 	auto *trigLay = new QVBoxLayout(trigBox);
+	trigLay->setContentsMargins(8, 8, 8, 8);
+	trigLay->setSpacing(6);
 
 	auto *rowType = new QHBoxLayout();
+	rowType->setSpacing(8);
 	cmbTrigger = new QComboBox(trigBox);
 	cmbTrigger->addItem("Keyboard", "keyboard");
 	cmbTrigger->addItem("Mouse Button", "mouse");
@@ -94,6 +109,7 @@ void ZoominatorDialog::buildUi()
 	rowHotkeyWidget = new QWidget(trigBox);
 	auto *rowHot = new QHBoxLayout(rowHotkeyWidget);
 	rowHot->setContentsMargins(0, 0, 0, 0);
+	rowHot->setSpacing(8);
 	editHotkey = new QKeySequenceEdit(rowHotkeyWidget);
 	btnClearHotkey = new QPushButton("Clear", rowHotkeyWidget);
 	btnClearHotkey->setToolTip("Clear keyboard hotkey");
@@ -105,6 +121,7 @@ void ZoominatorDialog::buildUi()
 	auto *rowFollowToggleWidget = new QWidget(trigBox);
 	auto *rowFollowToggle = new QHBoxLayout(rowFollowToggleWidget);
 	rowFollowToggle->setContentsMargins(0, 0, 0, 0);
+	rowFollowToggle->setSpacing(8);
 	editFollowToggleHotkey = new QKeySequenceEdit(rowFollowToggleWidget);
 	btnClearFollowToggleHotkey = new QPushButton("Clear", rowFollowToggleWidget);
 	btnClearFollowToggleHotkey->setToolTip("Clear follow mouse toggle hotkey");
@@ -116,6 +133,7 @@ void ZoominatorDialog::buildUi()
 	rowMouseWidget = new QWidget(trigBox);
 	auto *rowMouse = new QHBoxLayout(rowMouseWidget);
 	rowMouse->setContentsMargins(0, 0, 0, 0);
+	rowMouse->setSpacing(8);
 	cmbMouseBtn = new QComboBox(rowMouseWidget);
 	cmbMouseBtn->addItem("Left", "left");
 	cmbMouseBtn->addItem("Right", "right");
@@ -129,6 +147,7 @@ void ZoominatorDialog::buildUi()
 	rowModifiersWidget = new QWidget(trigBox);
 	auto *rowMods = new QHBoxLayout(rowModifiersWidget);
 	rowMods->setContentsMargins(0, 0, 0, 0);
+	rowMods->setSpacing(8);
 	chkCtrl = new QCheckBox("Ctrl", rowModifiersWidget);
 	chkAlt = new QCheckBox("Alt", rowModifiersWidget);
 	chkShift = new QCheckBox("Shift", rowModifiersWidget);
@@ -144,41 +163,109 @@ void ZoominatorDialog::buildUi()
 	root->addWidget(trigBox);
 
 	auto *cfgBox = new QGroupBox("Zoom", this);
-	auto *cfg = new QFormLayout(cfgBox);
+	auto *cfgLay = new QVBoxLayout(cfgBox);
+	cfgLay->setContentsMargins(8, 8, 8, 8);
+	cfgLay->setSpacing(6);
+
+	auto *rowZoom = new QHBoxLayout();
+	rowZoom->setSpacing(8);
 
 	spZoom = new QDoubleSpinBox(cfgBox);
 	spZoom->setRange(0.0, 8.0);
 	spZoom->setSingleStep(0.05);
 	spZoom->setDecimals(2);
 	spZoom->setToolTip("Set to 0 or 1 to disable zoom and only follow the mouse. Values >1 zoom in.");
-	cfg->addRow("Zoom Factor", spZoom);
+	spZoom->setMinimumWidth(90);
 
 	spIn = new QSpinBox(cfgBox);
 	spIn->setRange(0, 5000);
 	spIn->setSingleStep(10);
-	cfg->addRow("Animation In (ms)", spIn);
+	spIn->setMinimumWidth(80);
 
 	spOut = new QSpinBox(cfgBox);
 	spOut->setRange(0, 5000);
 	spOut->setSingleStep(10);
-	cfg->addRow("Animation Out (ms)", spOut);
+	spOut->setMinimumWidth(80);
+
+	rowZoom->addWidget(new QLabel("Zoom", cfgBox));
+	rowZoom->addWidget(spZoom);
+	rowZoom->addSpacing(8);
+	rowZoom->addWidget(new QLabel("In (ms)", cfgBox));
+	rowZoom->addWidget(spIn);
+	rowZoom->addSpacing(8);
+	rowZoom->addWidget(new QLabel("Out (ms)", cfgBox));
+	rowZoom->addWidget(spOut);
+	rowZoom->addStretch(1);
+
+	cfgLay->addLayout(rowZoom);
+
+	auto *rowFollow = new QHBoxLayout();
+	rowFollow->setSpacing(8);
 
 	chkFollow = new QCheckBox("Follow Mouse (when cursor is inside the captured region)", cfgBox);
-	cfg->addRow(chkFollow);
 
 	spFollowSpeed = new QDoubleSpinBox(cfgBox);
 	spFollowSpeed->setRange(0.1, 40.0);
 	spFollowSpeed->setSingleStep(0.5);
 	spFollowSpeed->setDecimals(1);
-	cfg->addRow("Follow Speed", spFollowSpeed);
+	spFollowSpeed->setMinimumWidth(80);
+
+	rowFollow->addWidget(chkFollow, 1);
+	rowFollow->addWidget(new QLabel("Speed", cfgBox));
+	rowFollow->addWidget(spFollowSpeed);
+
+	cfgLay->addLayout(rowFollow);
 
 	chkPortraitCover = new QCheckBox("Portrait canvas cover (auto scale to fill)", cfgBox);
 	chkPortraitCover->setToolTip(
 		"When the base canvas is vertical (portrait), scale the capture so it fully covers the canvas (no top/bottom gaps).");
-	cfg->addRow(chkPortraitCover);
+	cfgLay->addWidget(chkPortraitCover);
+
+	auto *rowMarkerFlags = new QHBoxLayout();
+	rowMarkerFlags->setSpacing(8);
+
+	chkShowCursorMarker = new QCheckBox("Show cursor halo", cfgBox);
+	chkMarkerOnlyOnClick = new QCheckBox("Show only after click", cfgBox);
+	chkMarkerOnlyOnClick->setToolTip(
+		"When enabled, the halo stays hidden until you click inside the captured source. When disabled, it follows the cursor live.");
+
+	rowMarkerFlags->addWidget(chkShowCursorMarker);
+	rowMarkerFlags->addWidget(chkMarkerOnlyOnClick);
+	rowMarkerFlags->addStretch(1);
+
+	cfgLay->addLayout(rowMarkerFlags);
+
+	auto *rowHalo = new QHBoxLayout();
+	rowHalo->setSpacing(8);
+
+	spMarkerSize = new QSpinBox(cfgBox);
+	spMarkerSize->setRange(6, 256);
+	spMarkerSize->setSingleStep(2);
+	spMarkerSize->setMinimumWidth(70);
+
+	spMarkerThickness = new QSpinBox(cfgBox);
+	spMarkerThickness->setRange(1, 64);
+	spMarkerThickness->setSingleStep(1);
+	spMarkerThickness->setMinimumWidth(70);
+
+	btnMarkerColor = new QPushButton("Pick Color", cfgBox);
+	btnMarkerColor->setMinimumHeight(26);
+	btnMarkerColor->setMinimumWidth(120);
+
+	rowHalo->addWidget(new QLabel("Halo Size", cfgBox));
+	rowHalo->addWidget(spMarkerSize);
+	rowHalo->addSpacing(8);
+	rowHalo->addWidget(new QLabel("Thickness", cfgBox));
+	rowHalo->addWidget(spMarkerThickness);
+	rowHalo->addSpacing(8);
+	rowHalo->addWidget(new QLabel("Color", cfgBox));
+	rowHalo->addWidget(btnMarkerColor);
+	rowHalo->addStretch(1);
+
+	cfgLay->addLayout(rowHalo);
 
 	chkDebug = new QCheckBox("Debug Logging", cfgBox);
-	cfg->addRow(chkDebug);
+	cfgLay->addWidget(chkDebug);
 
 	root->addWidget(cfgBox);
 
@@ -188,6 +275,8 @@ void ZoominatorDialog::buildUi()
 	root->addWidget(lblStatus);
 
 	auto *btnRow = new QHBoxLayout();
+	btnRow->setSpacing(8);
+
 	btnRefresh = new QPushButton("Refresh Lists", this);
 	btnApply = new QPushButton("Apply", this);
 	btnTest = new QPushButton("Test", this);
@@ -203,8 +292,8 @@ void ZoominatorDialog::buildUi()
 	connect(btnApply, &QPushButton::clicked, this, &ZoominatorDialog::applyToController);
 	connect(btnTest, &QPushButton::clicked, this, &ZoominatorDialog::testZoom);
 	connect(btnClearHotkey, &QPushButton::clicked, this, &ZoominatorDialog::clearHotkey);
-	connect(btnClearFollowToggleHotkey, &QPushButton::clicked, this,
-		&ZoominatorDialog::clearFollowToggleHotkey);
+	connect(btnClearFollowToggleHotkey, &QPushButton::clicked, this, &ZoominatorDialog::clearFollowToggleHotkey);
+	connect(btnMarkerColor, &QPushButton::clicked, this, &ZoominatorDialog::chooseMarkerColor);
 
 	connect(cmbTrigger, &QComboBox::currentIndexChanged, this, [this](int) {
 		const QString trigger = cmbTrigger->currentData().toString();
@@ -299,6 +388,11 @@ void ZoominatorDialog::loadFromController()
 	chkFollow->setChecked(c.followMouse);
 	spFollowSpeed->setValue(c.followSpeed);
 	chkPortraitCover->setChecked(c.portraitCover);
+	chkShowCursorMarker->setChecked(c.showCursorMarker);
+	chkMarkerOnlyOnClick->setChecked(c.markerOnlyOnClick);
+	spMarkerSize->setValue(c.markerSize);
+	spMarkerThickness->setValue(c.markerThickness);
+	updateMarkerColorButton(QColor::fromRgba(c.markerColor));
 	chkDebug->setChecked(c.debug);
 
 	const QString trigger = cmbTrigger->currentData().toString();
@@ -340,10 +434,16 @@ void ZoominatorDialog::applyToController()
 	c.followMouse = chkFollow->isChecked();
 	c.followSpeed = spFollowSpeed->value();
 	c.portraitCover = chkPortraitCover->isChecked();
+	c.showCursorMarker = chkShowCursorMarker->isChecked();
+	c.markerOnlyOnClick = chkMarkerOnlyOnClick->isChecked();
+	c.markerSize = spMarkerSize->value();
+	c.markerThickness = spMarkerThickness->value();
+	if (btnMarkerColor)
+		c.markerColor = (uint32_t)btnMarkerColor->property("markerRgba").toUInt();
 	c.debug = chkDebug->isChecked();
 
 	c.saveSettings();
-	lblStatus->setText(QStringLiteral("Applied. Use your trigger to zoom. Use the follow toggle hotkey to freeze/unfreeze tracking."));
+	lblStatus->setText(QStringLiteral("Applied. The halo now uses only size, thickness, and color."));
 }
 
 void ZoominatorDialog::testZoom()
@@ -360,4 +460,30 @@ void ZoominatorDialog::clearHotkey()
 void ZoominatorDialog::clearFollowToggleHotkey()
 {
 	editFollowToggleHotkey->setKeySequence(QKeySequence());
+}
+
+void ZoominatorDialog::updateMarkerColorButton(const QColor &color)
+{
+	if (!btnMarkerColor)
+		return;
+
+	const QColor c = color.isValid() ? color : QColor::fromRgb(255, 0, 0);
+	btnMarkerColor->setProperty("markerRgba", c.rgba());
+	btnMarkerColor->setText(QStringLiteral("%1 / %2 / %3").arg(c.red()).arg(c.green()).arg(c.blue()));
+	btnMarkerColor->setStyleSheet(
+		QStringLiteral("text-align:left; padding: 6px 10px; background:%1; color:%2;")
+			.arg(c.name(QColor::HexArgb))
+			.arg(c.lightness() < 128 ? QStringLiteral("#ffffff") : QStringLiteral("#000000")));
+}
+
+void ZoominatorDialog::chooseMarkerColor()
+{
+	const uint rgba = btnMarkerColor ? btnMarkerColor->property("markerRgba").toUInt() : QColor(255, 0, 0).rgba();
+	const QColor current = QColor::fromRgba(rgba);
+	const QColor picked = QColorDialog::getColor(current, this, QStringLiteral("Select marker color"),
+						     QColorDialog::ShowAlphaChannel);
+	if (!picked.isValid())
+		return;
+
+	updateMarkerColorButton(picked);
 }

@@ -6,6 +6,7 @@
 #include <QPointer>
 #include <QKeySequence>
 #include <QTimer>
+#include <QString>
 
 #ifdef _WIN32
 #	define WIN32_LEAN_AND_MEAN
@@ -52,6 +53,11 @@ public:
 	bool followMouseRuntimeEnabled = true;
 	double followSpeed = 8.0; 
 	bool portraitCover = true;
+	bool showCursorMarker = false;
+	bool markerOnlyOnClick = false;
+	uint32_t markerColor = 0xFFFF0000;
+	int markerSize = 26;
+	int markerThickness = 4;
 	bool debug = false;
 
 signals:
@@ -73,8 +79,6 @@ private:
 	void startZoomIn();
 	void startZoomOut();
 	void resetState();
-
-	// Trigger (hooks)
 	void rebuildTriggersFromSettings();
 	void installHooks();
 	void uninstallHooks();
@@ -85,34 +89,46 @@ private:
 	bool triggerMatchesMouse(unsigned int msg, unsigned short mouseData) const;
 	bool modsMatch() const;
 
-	// Target resolution (current scene)
 	obs_sceneitem_t *findTargetItemInCurrentScene() const;
 
-	// Mouse mapping to source pixels
 	bool getCursorPos(int &x, int &y) const;
 	bool mapCursorToSourcePixels(obs_source_t *src, int cursorX, int cursorY, float &sx, float &sy, bool &cursorInside) const;
 
-	// Apply
 	void captureOriginal(obs_sceneitem_t *item);
 	void restoreOriginal(obs_sceneitem_t *item);
+	QString markerImagePath() const;
+	void ensureMarkerSource();
+	obs_sceneitem_t *ensureMarkerItem(obs_scene_t *scene);
+	void hideMarkerInScene(obs_scene_t *scene);
+	void rebuildMarkerImage(int opacity255 = 255);
+	void updateMarkerAppearance(int opacity255 = 255);
+	void updateMarkerPosition(obs_scene_t *scene, double x, double y, int opacity255 = 255);
+	bool captureMarkerClickPosition();
+	bool isMarkerFlashActive(qint64 nowMs) const;
+	int currentMarkerOpacity(qint64 nowMs);
 	void applyZoom(obs_sceneitem_t *item, obs_source_t *src, double t);
 
-	// Animation state
 	QTimer tickTimer;
 	bool zoomPressed = false;
 	bool zoomLatched = false;
 	bool zoomActive = false;
 
-	// 0..1
 	double animT = 0.0;
-	int animDir = 0; // +1 in, -1 out
+	int animDir = 0;
 
-	// follow smoothing in source pixels
 	bool followHasPos = false;
 	float followX = 0.0f;
 	float followY = 0.0f;
 
-	// Original item state
+	bool markerClickHasPos = false;
+	float markerClickX = 0.0f;
+	float markerClickY = 0.0f;
+	uint32_t markerAppearanceHash = 0;
+	int markerRenderedOpacity = -1;
+	qint64 markerClickFlashStartMs = 0;
+	qint64 markerClickFlashHoldUntilMs = 0;
+	qint64 markerClickFlashFadeOutEndMs = 0;
+
 	struct OrigState {
 		bool valid = false;
 		vec2 pos{};
@@ -127,8 +143,8 @@ private:
 
 	QPointer<ZoominatorDialog> dialog;
 	QPointer<ZoominatorDock> dock;
+	obs_source_t *markerSource = nullptr;
 
-	// Parsed keyboard trigger (Windows VK + modifiers)
 	int hotkeyVk = 0;
 	bool hkValid = false;
 	int followToggleHotkeyVk = 0;
@@ -139,8 +155,6 @@ private:
 	bool followToggleModWin = false;
 
 #ifdef _WIN32
-	// Low-level hook callbacks must be plain functions. Declaring them as
-	// static members keeps access to private controller state.
 	static LRESULT CALLBACK kb_hook_proc(int nCode, WPARAM wParam, LPARAM lParam);
 	static LRESULT CALLBACK mouse_hook_proc(int nCode, WPARAM wParam, LPARAM lParam);
 
