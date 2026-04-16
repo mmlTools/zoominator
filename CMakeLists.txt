@@ -48,6 +48,11 @@ if(APPLE)
   )
 endif()
 
+if(UNIX AND NOT APPLE)
+  find_package(X11 REQUIRED COMPONENTS Xrandr Xi)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE X11::X11 X11::Xrandr X11::Xi)
+endif()
+
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
   src/plugin-main.cpp
   src/zoominator-controller.cpp
