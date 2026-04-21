@@ -1,87 +1,96 @@
-# Zoominator Smart Follow & Zoom for OBS Studio
+# Zoominator – Smart Scene Zoom & Follow for OBS Studio
 
-Zoominator is an OBS Studio plugin that lets a capture source smoothly follow the mouse and optionally zoom in, while always keeping the visible area fully covered. It’s built for tutorials, presentations, live coding, and gameplay analysis where the viewer’s attention should naturally track what’s happening on screen.
+[![Watch the demo](https://img.youtube.com/vi/R3KQnsnzIAM/0.jpg)](https://www.youtube.com/watch?v=R3KQnsnzIAM)
 
-## Features
+Zoominator is an OBS Studio plugin that dynamically **zooms and pans the entire scene** to follow your mouse, keeping the focus exactly where the action happens.
 
-### Smart Mouse Follow
-The selected source pans to keep the cursor in view with adjustable smoothing.
+It operates at the **scene level**, meaning it works with any source automatically—no per-source setup, no dock, no complexity.
 
-Supported sources:
-- Display Capture
-- Window Capture
-- Game Capture
+---
 
-### Dynamic Zoom
-Set a zoom factor to magnify the area around the cursor.
+## What It Does
 
-- **Zoom = 1.0 or 0.0** enables *follow-only mode* (no magnification, just panning).
-- Higher values zoom in while preserving full canvas coverage.
+- **Scene-wide Zoom & Pan**  
+  Smoothly transforms the entire scene based on mouse position.
 
-### No Corner Leakage
-The movement and scaling logic clamps the source so the canvas is always fully filled.  
-This works with cropped Window and Game Capture sources as well, preventing black borders from appearing during motion.
+- **Smart Clamping**  
+  Ensures the canvas is always fully covered—no black edges, even with cropped sources.
 
-### Vertical (Portrait) Canvas Support
-When the base canvas is vertical (e.g. 1080×1920), Zoominator can automatically scale the source in “cover” mode so the top and bottom always fill the frame. This is ideal for Shorts, Reels, and other portrait formats.
+- **Mouse-Driven Focus**  
+  Keeps attention exactly where your cursor is.
 
-### Triggers
-- Toggle or Hold behavior
-- Keyboard or mouse button activation
-- Single-key / single-button operation
+- **Click Highlight (Halo)**  
+  Optional visual feedback on mouse clicks using a configurable halo.
 
-### Minimal Dock
-The dock is intentionally simple:
-- Target source selector
-- Refresh button
+- **Flexible Activation**  
+  Toggle or hold behavior with customizable key combinations.
 
-All advanced options are available in **Tools → Zoominator Settings**.
+---
 
-### Persistent Settings
-All configuration is saved using OBS’s standard plugin configuration path:
-
-```
-%APPDATA%/obs-studio/plugin_config/zoominator/
-```
-
-(or the equivalent location on macOS/Linux and in portable mode)
-
-The following are restored on restart:
-- Selected source
-- Zoom factor
-- Follow behavior and speed
-- Trigger mode and key/button
-- Portrait cover option
-- Clamping and movement rules
-
-## Platform Support
+## Installation
 
 ### Windows
-Full feature set:
-- Global mouse tracking
-- Keyboard and mouse hooks
-- Accurate window and game capture mapping
+1. Download the latest release
+2. Extract the archive and move the zoominator.dll file into your OBS Studio directory:
+   ```
+   C:\Program Files\obs-studio\obs-plugins\64bit
+   ```
+3. Restart OBS
 
-### macOS and Linux
-The zooming and transform logic is cross‑platform, but global input capture is OS‑specific.
+### macOS
+1. Download the `.pkg` or `.dmg` from releases
+2. Install and restart OBS
 
-- **macOS:** Requires a Quartz event tap and Accessibility permission for global mouse tracking.
-- **Linux (X11):** Can be implemented via XInput2.
-- **Wayland:** Global cursor tracking is restricted by design; functionality would be limited.
+### Linux (X11)
+1. Build from source or install via package (if available)
+2. Copy plugin files into:
+   ```
+   ~/.config/obs-studio/plugins/
+   ```
+3. Restart OBS
 
-A portable input layer is planned so Zoominator can gracefully adapt to each platform’s capabilities.
+---
 
-## Typical Use Cases
+## Build from Source
 
-- Software tutorials and live coding
-- Product demos
-- Strategy and replay analysis
-- Esports observing
-- Vertical short‑form video production
+### Requirements
+- OBS Studio development libraries
+- CMake (3.20+ recommended)
+- C++17 compatible compiler
+- Qt6
 
-## Project Notes
+### Steps
+```bash
+git clone https://github.com/your-repo/zoominator.git
+cd zoominator
+mkdir build && cd build
+cmake ..
+cmake --build . --config Release
+```
 
-Zoominator is designed to behave like a native OBS camera system rather than a script. The core is built on libobs transforms, with a small, focused UI and a configuration system that follows OBS conventions for stability and portability.
+---
+
+## Compatibility Notes
+
+- **Windows:** Full support (global input + smooth tracking)
+- **macOS:** Requires Accessibility permissions for input tracking
+- **Linux (X11):** Supported via XInput2
+- **Wayland:** Limited (no global cursor tracking)
+
+---
+
+## Use Cases
+
+- Tutorials & live coding  
+- Product demos  
+- Gameplay & analysis  
+- Vertical / short-form content  
+
+---
+
+## Notes
+
+Zoominator behaves like a **virtual camera system inside OBS**, applying transformations at the scene level for maximum flexibility and reliability.
 
 ## Clang format fix
 
