@@ -4,16 +4,17 @@
 #include <obs.h>
 #include <util/platform.h>
 
-#include <QApplication>
-#include <QColor>
-#include <QDir>
-#include <QImage>
-#include <QDateTime>
+#include <QGuiApplication>
+#include <QScreen>
+#include <QRect>
 #include <QKeySequence>
 #include <QKeyCombination>
+#include <QRegularExpression>
+#include <QDateTime>
+#include <QColor>
+#include <QImage>
 #include <QPainter>
 #include <QPen>
-#include <QRegularExpression>
 
 #include <cmath>
 #include <algorithm>
@@ -32,11 +33,7 @@
 #endif
 
 #include "zoominator-dialog.hpp"
-#include "zoominator-dock.hpp"
 
-/* X11 headers must be included AFTER all Qt headers because Xlib.h defines
-   macros (Bool, None, Status, CursorShape, etc.) that clash with Qt
-   identifiers. We undefine the worst offenders immediately after. */
 #ifdef __linux__
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -46,7 +43,6 @@
 #include <X11/extensions/Xrandr.h>
 #include <X11/Xatom.h>
 
-/* Undefine X11 macros that collide with Qt identifiers. */
 #undef Bool
 #undef None
 #undef Status
@@ -59,7 +55,6 @@
 #undef Below
 #undef Unsorted
 
-/* Re-provide constants we need under safe names. */
 static constexpr long X11_None = 0L;
 #endif
 
@@ -105,6 +100,10 @@ ZoominatorController::ZoominatorController()
 
 ZoominatorController::~ZoominatorController()
 {
+	if (markerFilter) {
+		obs_source_release(markerFilter);
+		markerFilter = nullptr;
+	}
 	if (markerSource) {
 		obs_source_release(markerSource);
 		markerSource = nullptr;
@@ -148,34 +147,14 @@ void ZoominatorController::initialize()
 	loadSettings();
 	rebuildTriggersFromSettings();
 	installHooks();
-
-	if (!dock) {
-		dock = new ZoominatorDock(reinterpret_cast<QWidget *>(obs_frontend_get_main_window()));
-
-#if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(30, 0, 0)
-		const char *dock_id = "zoominator.dock";
-		obs_frontend_add_dock_by_id(dock_id, "Zoominator", dock);
-#else
-		dock->setWindowTitle("Zoominator");
-		dock->setObjectName("zoominator.dock");
-		obs_frontend_add_dock(dock);
-#endif
-	}
 }
 
 void ZoominatorController::shutdown()
 {
 	saveSettings();
-#if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(30, 0, 0)
-	obs_frontend_remove_dock("zoominator.dock");
-#endif
 	uninstallHooks();
 	ensureTicking(false);
 	resetState();
-	if (markerSource) {
-		obs_source_release(markerSource);
-		markerSource = nullptr;
-	}
 }
 
 void ZoominatorController::showDialog()
@@ -190,17 +169,10 @@ void ZoominatorController::showDialog()
 	dialog->activateWindow();
 }
 
-void ZoominatorController::toggleDockVisibility(bool show)
-{
-	if (!dock)
-		return;
-	dock->setVisible(show);
-	emit dockVisibilityChanged(show);
-}
 
 void ZoominatorController::loadSettings()
 {
-	sourceName.clear();
+	screenKey.clear();
 
 	hotkeySequence = QStringLiteral("Ctrl+F1");
 	hotkeyMode = QStringLiteral("hold");
@@ -211,6 +183,14 @@ void ZoominatorController::loadSettings()
 	modAlt = false;
 	modShift = false;
 	modWin = false;
+	modLeftCtrl = false;
+	modRightCtrl = false;
+	modLeftAlt = false;
+	modRightAlt = false;
+	modLeftShift = false;
+	modRightShift = false;
+	modLeftWin = false;
+	modRightWin = false;
 
 	zoomFactor = 2.0;
 	animInMs = 180;
@@ -240,7 +220,9 @@ void ZoominatorController::loadSettings()
 		return v ? QString::fromUtf8(v) : QString();
 	};
 
-	sourceName = getStr("source_name");
+	screenKey = getStr("screen_key");
+	if (screenKey.isEmpty())
+		screenKey = getStr("source_name");
 	hotkeySequence = getStr("hotkey");
 	if (hotkeySequence.isEmpty())
 		hotkeySequence = QStringLiteral("Ctrl+F1");
@@ -337,6 +319,22 @@ void ZoominatorController::loadSettings()
 		modShift = obs_data_get_bool(data, "mod_shift");
 	if (obs_data_has_user_value(data, "mod_win"))
 		modWin = obs_data_get_bool(data, "mod_win");
+	if (obs_data_has_user_value(data, "mod_left_ctrl"))
+		modLeftCtrl = obs_data_get_bool(data, "mod_left_ctrl");
+	if (obs_data_has_user_value(data, "mod_right_ctrl"))
+		modRightCtrl = obs_data_get_bool(data, "mod_right_ctrl");
+	if (obs_data_has_user_value(data, "mod_left_alt"))
+		modLeftAlt = obs_data_get_bool(data, "mod_left_alt");
+	if (obs_data_has_user_value(data, "mod_right_alt"))
+		modRightAlt = obs_data_get_bool(data, "mod_right_alt");
+	if (obs_data_has_user_value(data, "mod_left_shift"))
+		modLeftShift = obs_data_get_bool(data, "mod_left_shift");
+	if (obs_data_has_user_value(data, "mod_right_shift"))
+		modRightShift = obs_data_get_bool(data, "mod_right_shift");
+	if (obs_data_has_user_value(data, "mod_left_win"))
+		modLeftWin = obs_data_get_bool(data, "mod_left_win");
+	if (obs_data_has_user_value(data, "mod_right_win"))
+		modRightWin = obs_data_get_bool(data, "mod_right_win");
 
 	if (obs_data_has_user_value(data, "zoom_factor"))
 		zoomFactor = obs_data_get_double(data, "zoom_factor");
@@ -373,14 +371,6 @@ void ZoominatorController::loadSettings()
 		markerSize = (int)obs_data_get_int(data, "marker_size");
 	if (obs_data_has_user_value(data, "marker_thickness"))
 		markerThickness = (int)obs_data_get_int(data, "marker_thickness");
-	if (markerSize < 6)
-		markerSize = 6;
-	if (markerSize > 256)
-		markerSize = 256;
-	if (markerThickness < 1)
-		markerThickness = 1;
-	if (markerThickness > 64)
-		markerThickness = 64;
 
 	if (obs_data_has_user_value(data, "debug"))
 		debug = obs_data_get_bool(data, "debug");
@@ -407,7 +397,7 @@ void ZoominatorController::saveSettings()
 	ensure_parent_dir_exists(p);
 
 	obs_data_t *data = obs_data_create();
-	obs_data_set_string(data, "source_name", sourceName.toUtf8().constData());
+	obs_data_set_string(data, "screen_key", screenKey.toUtf8().constData());
 	obs_data_set_string(data, "hotkey", hotkeySequence.toUtf8().constData());
 	obs_data_set_string(data, "hotkey_mode", hotkeyMode.toUtf8().constData());
 	obs_data_set_string(data, "follow_toggle_hotkey", followToggleHotkeySequence.toUtf8().constData());
@@ -418,6 +408,14 @@ void ZoominatorController::saveSettings()
 	obs_data_set_bool(data, "mod_alt", modAlt);
 	obs_data_set_bool(data, "mod_shift", modShift);
 	obs_data_set_bool(data, "mod_win", modWin);
+	obs_data_set_bool(data, "mod_left_ctrl", modLeftCtrl);
+	obs_data_set_bool(data, "mod_right_ctrl", modRightCtrl);
+	obs_data_set_bool(data, "mod_left_alt", modLeftAlt);
+	obs_data_set_bool(data, "mod_right_alt", modRightAlt);
+	obs_data_set_bool(data, "mod_left_shift", modLeftShift);
+	obs_data_set_bool(data, "mod_right_shift", modRightShift);
+	obs_data_set_bool(data, "mod_left_win", modLeftWin);
+	obs_data_set_bool(data, "mod_right_win", modRightWin);
 
 	obs_data_set_double(data, "zoom_factor", zoomFactor);
 	obs_data_set_int(data, "anim_in_ms", animInMs);
@@ -463,6 +461,10 @@ void ZoominatorController::startZoomIn()
 void ZoominatorController::startZoomOut()
 {
 	animDir = -1;
+	markerClickFlashStartMs = 0;
+	markerClickFlashHoldUntilMs = 0;
+	markerClickFlashFadeOutEndMs = 0;
+	markerClickHasPos = false;
 	ensureTicking(true);
 }
 
@@ -474,12 +476,16 @@ void ZoominatorController::resetState()
 	animT = 0.0;
 	animDir = 0;
 	followHasPos = false;
-	orig.valid = false;
-	markerRenderedOpacity = -1;
+	targetHasPos = false;
+	sceneItems.clear();
+	sceneContentBoundsValid = false;
+	sceneContentMin = {};
+	sceneContentMax = {};
+	markerCurrentOpacity = -1;
 	markerClickFlashStartMs = 0;
 	markerClickFlashHoldUntilMs = 0;
 	markerClickFlashFadeOutEndMs = 0;
-
+	markerClickHasPos = false;
 	obs_source_t *sceneSource = obs_frontend_get_current_scene();
 	if (sceneSource) {
 		obs_scene_t *scene = obs_scene_from_source(sceneSource);
@@ -489,44 +495,92 @@ void ZoominatorController::resetState()
 	}
 }
 
-obs_sceneitem_t *ZoominatorController::findTargetItemInCurrentScene() const
+static QString make_screen_key_from_rect(int x, int y, int w, int h)
 {
-	if (sourceName.isEmpty())
-		return nullptr;
+	return QStringLiteral("%1,%2,%3,%4").arg(x).arg(y).arg(w).arg(h);
+}
+
+void ZoominatorController::enumerateTargetItemsInCurrentScene(std::vector<obs_sceneitem_t *> &items) const
+{
+	items.clear();
 
 	obs_source_t *sceneSource = obs_frontend_get_current_scene();
 	if (!sceneSource)
-		return nullptr;
+		return;
 
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
 	obs_source_release(sceneSource);
 	if (!scene)
-		return nullptr;
+		return;
 
-	struct Finder {
-		QString want;
-		obs_sceneitem_t *found = nullptr;
+	struct Ctx {
+		std::vector<obs_sceneitem_t *> *items = nullptr;
 
-		static bool enum_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+		static bool is_marker_item(obs_sceneitem_t *item)
 		{
-			auto *f = static_cast<Finder *>(param);
-			if (!f || f->found)
-				return false;
+			if (!item)
+				return true;
 			obs_source_t *src = obs_sceneitem_get_source(item);
 			if (!src)
 				return true;
-			const char *nm = obs_source_get_name(src);
-			if (nm && *nm && f->want == QString::fromUtf8(nm)) {
-				f->found = item;
-				return false;
-			}
-			return true;
+			if (src == ZoominatorController::instance().markerSource)
+				return true;
+			const char *srcName = obs_source_get_name(src);
+			return srcName && QString::fromUtf8(srcName) == QString::fromUtf8(kZoominatorMarkerSourceName);
+		}
+
+
+		static void enum_scene(obs_scene_t *scene, Ctx *ctx)
+		{
+			if (!scene || !ctx || !ctx->items)
+				return;
+			obs_scene_enum_items(
+				scene,
+				[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+					auto *ctx = static_cast<Ctx *>(param);
+					if (!ctx || !ctx->items || !item)
+						return true;
+					if (is_marker_item(item))
+						return true;
+
+					obs_source_t *src = obs_sceneitem_get_source(item);
+					if (!src)
+						return true;
+
+
+					if (obs_scene_t *subScene = obs_scene_from_source(src)) {
+						enum_scene(subScene, ctx);
+						return true;
+					}
+
+					ctx->items->push_back(item);
+					return true;
+				},
+				ctx);
 		}
 	};
 
-	Finder f{sourceName, nullptr};
-	obs_scene_enum_items(scene, Finder::enum_cb, &f);
-	return f.found;
+	Ctx ctx{&items};
+	Ctx::enum_scene(scene, &ctx);
+}
+
+bool ZoominatorController::getSelectedScreenRect(int &x, int &y, int &w, int &h) const
+{
+	const auto screens = QGuiApplication::screens();
+	for (auto *screen : screens) {
+		if (!screen)
+			continue;
+		const QRect g = screen->geometry();
+		const QString key = make_screen_key_from_rect(g.x(), g.y(), g.width(), g.height());
+		if (screenKey.isEmpty() || key == screenKey) {
+			x = g.x();
+			y = g.y();
+			w = g.width();
+			h = g.height();
+			return w > 0 && h > 0;
+		}
+	}
+	return false;
 }
 
 bool ZoominatorController::getCursorPos(int &x, int &y) const
@@ -811,6 +865,16 @@ static bool parse_obs_window_selector(const QString &sel, QString &title, QStrin
 	clazz = s.mid(mid + 1);
 	title = s.left(mid);
 	return true;
+}
+
+static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantWin,
+			 bool wantLeftCtrl, bool wantRightCtrl, bool wantLeftAlt, bool wantRightAlt,
+			 bool wantLeftShift, bool wantRightShift, bool wantLeftWin, bool wantRightWin);
+
+static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantWin)
+{
+	return mods_current(wantCtrl, wantAlt, wantShift, wantWin, false, false, false, false, false, false,
+			    false, false);
 }
 
 static std::wstring to_w(const QString &s)
@@ -1136,7 +1200,6 @@ static bool match_monitor_rect(obs_source_t *src, LinuxRect &rcOut)
 	bool hasId = false;
 	get_monitor_capture_selector(src, selector, monId, hasId);
 
-	/* OBS on Linux (PipeWire/X11) often stores monitor index as an integer. */
 	if (!selector.isEmpty()) {
 		for (auto &m : mons) {
 			if (m.name == selector) {
@@ -1144,7 +1207,6 @@ static bool match_monitor_rect(obs_source_t *src, LinuxRect &rcOut)
 				return true;
 			}
 		}
-		/* Try matching "DISPLAY<N>" pattern, or just the trailing number. */
 		QRegularExpression re("(\\d+)$");
 		auto mw = re.match(selector);
 		if (mw.hasMatch()) {
@@ -1170,7 +1232,6 @@ static bool match_monitor_rect(obs_source_t *src, LinuxRect &rcOut)
 		}
 	}
 
-	/* Fallback: if only one monitor, use it. */
 	if (mons.size() == 1) {
 		auto &m = mons[0];
 		rcOut = {m.x, m.y, m.w, m.h};
@@ -1188,7 +1249,6 @@ static bool parse_obs_window_selector_linux(const QString &sel, QString &title, 
 	if (sel.isEmpty())
 		return false;
 
-	/* OBS Linux window capture uses "title:class:exe" format. */
 	QString s = sel;
 	int last = s.lastIndexOf(':');
 	if (last <= 0) {
@@ -1214,7 +1274,6 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 	if (!s)
 		return false;
 
-	/* OBS xcomposite/xshm window capture stores "window" or "capture_window" as XID or selector. */
 	const char *w = obs_data_get_string(s, "window");
 	QString sel = (w && *w) ? QString::fromUtf8(w) : QString();
 	if (sel.isEmpty()) {
@@ -1222,7 +1281,6 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 		sel = (w && *w) ? QString::fromUtf8(w) : QString();
 	}
 
-	/* Also try the window name property. */
 	const char *windowName = obs_data_get_string(s, "window_name");
 	QString wantName = (windowName && *windowName) ? QString::fromUtf8(windowName) : QString();
 
@@ -1233,7 +1291,6 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 	if (!dpy)
 		return false;
 
-	/* If we have a numeric window ID, use it directly. */
 	if (windowId > 0) {
 		XWindowAttributes attr;
 		if (XGetWindowAttributes(dpy, (Window)windowId, &attr)) {
@@ -1247,7 +1304,6 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 		}
 	}
 
-	/* Parse the selector string for title/class matching. */
 	QString title, clazz, exe;
 	if (!sel.isEmpty())
 		parse_obs_window_selector_linux(sel, title, clazz, exe);
@@ -1259,7 +1315,6 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 		return false;
 	}
 
-	/* Enumerate top-level windows. */
 	Window root = DefaultRootWindow(dpy);
 	Atom netClientList = XInternAtom(dpy, "_NET_CLIENT_LIST", True);
 	bool found = false;
@@ -1276,7 +1331,6 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 			for (unsigned long i = 0; i < nitems && !found; i++) {
 				Window win = windows[i];
 
-				/* Check class. */
 				if (!clazz.isEmpty()) {
 					XClassHint ch{};
 					if (XGetClassHint(dpy, win, &ch)) {
@@ -1294,7 +1348,6 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 					}
 				}
 
-				/* Check title. */
 				if (!title.isEmpty()) {
 					char *name = nullptr;
 					if (XFetchName(dpy, win, &name) && name) {
@@ -1307,7 +1360,6 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 					}
 				}
 
-				/* Found a match -- get geometry. */
 				XWindowAttributes attr;
 				if (XGetWindowAttributes(dpy, win, &attr)) {
 					int absX = 0, absY = 0;
@@ -1326,241 +1378,37 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 }
 #endif // __linux__
 
-bool ZoominatorController::mapCursorToSourcePixels(obs_source_t *src, int cursorX, int cursorY, float &sx, float &sy,
-						   bool &cursorInside) const
+bool ZoominatorController::mapCursorToScenePixels(int cursorX, int cursorY, float &sx, float &sy,
+					   bool &cursorInside) const
 {
 	cursorInside = false;
 	sx = 0.f;
 	sy = 0.f;
-	if (!src)
+
+	int rx = 0, ry = 0, rw = 0, rh = 0;
+	if (!getSelectedScreenRect(rx, ry, rw, rh) || rw <= 0 || rh <= 0)
 		return false;
 
-	const char *id = obs_source_get_id(src);
-	if (!id)
+	cursorInside = !(cursorX < rx || cursorX >= rx + rw || cursorY < ry || cursorY >= ry + rh);
+	const int clampedX = std::max(rx, std::min(cursorX, rx + rw - 1));
+	const int clampedY = std::max(ry, std::min(cursorY, ry + rh - 1));
+	const double relX = (clampedX - rx) / (double)rw;
+	const double relY = (clampedY - ry) / (double)rh;
+
+	obs_video_info ovi{};
+	const bool haveVi = obs_get_video_info(&ovi);
+	const double cw = haveVi ? (double)ovi.base_width : 1920.0;
+	const double ch = haveVi ? (double)ovi.base_height : 1080.0;
+	if (cw <= 0.0 || ch <= 0.0)
 		return false;
 
-#ifdef _WIN32
-	RECT rc{};
-	bool haveRect = false;
-	const bool isMonitorCap = (strcmp(id, "monitor_capture") == 0 || strcmp(id, "display_capture") == 0 ||
-				   strcmp(id, "screen_capture") == 0 ||
-				   (strstr(id, "monitor") && strstr(id, "capture")));
-
-	if (isMonitorCap) {
-		haveRect = match_monitor_rect(src, rc);
-	} else if (strcmp(id, "window_capture") == 0 || strcmp(id, "game_capture") == 0) {
-		haveRect = match_window_rect_for_source(src, rc);
-		if (!haveRect) {
-			POINT pt{cursorX, cursorY};
-			HWND h = WindowFromPoint(pt);
-			if (h) {
-				HWND root = GetAncestor(h, GA_ROOT);
-				if (root)
-					h = root;
-				RECT trc{};
-				if (GetWindowRect(h, &trc)) {
-					if ((trc.right - trc.left) > 64 && (trc.bottom - trc.top) > 64) {
-						rc = trc;
-						haveRect = true;
-					}
-				}
-			}
-		}
-	}
-
-	if (!haveRect) {
-		if (isMonitorCap)
-			return false;
-
-		const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-		const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-		const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-		const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-		if (vw > 0 && vh > 0) {
-			rc.left = vx;
-			rc.top = vy;
-			rc.right = vx + vw;
-			rc.bottom = vy + vh;
-			haveRect = true;
-		} else {
-			return false;
-		}
-	}
-
-	const int w = rc.right - rc.left;
-	const int h = rc.bottom - rc.top;
-	if (w <= 0 || h <= 0)
-		return false;
-
-	cursorInside = !(cursorX < rc.left || cursorX >= rc.right || cursorY < rc.top || cursorY >= rc.bottom);
-
-	const int clampedX = (cursorX < rc.left) ? rc.left : (cursorX >= rc.right ? (rc.right - 1) : cursorX);
-	const int clampedY = (cursorY < rc.top) ? rc.top : (cursorY >= rc.bottom ? (rc.bottom - 1) : cursorY);
-
-	const double relX = (clampedX - rc.left) / (double)w;
-	const double relY = (clampedY - rc.top) / (double)h;
-
-const uint32_t sw = obs_source_get_width(src);
-const uint32_t sh = obs_source_get_height(src);
-if (sw == 0 || sh == 0)
-	return false;
-
-sx = (float)(relX * (double)sw);
-sy = (float)(relY * (double)sh);
-return true;
-#elif defined(__APPLE__)
-	CGRect rc;
-	bool haveRect = false;
-	
-	const bool isUnifiedScreenCap = (strcmp(id, "screen_capture") == 0 || strcmp(id, "macos_screen_capture") == 0);
-	int captureType = -1;
-	if (isUnifiedScreenCap) {
-		obs_data_t *props = obs_source_get_settings(src);
-		if (props) {
-			captureType = (int)obs_data_get_int(props, "type");
-			obs_data_release(props);
-		}
-	}
-
-	const bool isDisplayCap = (isUnifiedScreenCap && captureType == 0) || strcmp(id, "display_capture") == 0 ||
-				  strcmp(id, "monitor_capture") == 0;
-	const bool isWindowCap = (isUnifiedScreenCap && captureType == 1) || strcmp(id, "window_capture") == 0;
-
-	if (isDisplayCap) {
-		haveRect = match_monitor_rect(src, rc);
-	} else if (isWindowCap || (isUnifiedScreenCap && captureType >= 1)) {
-		haveRect = match_window_rect_for_source(src, rc);
-	}
-
-	if (!haveRect) {
-		if (isDisplayCap)
-			return false;
-		rc = CGDisplayBounds(CGMainDisplayID());
-		haveRect = (rc.size.width > 0 && rc.size.height > 0);
-		if (!haveRect)
-			return false;
-	}
-
-	const int w = (int)rc.size.width;
-	const int h = (int)rc.size.height;
-	if (w <= 0 || h <= 0)
-		return false;
-
-	cursorInside = CGRectContainsPoint(rc, CGPointMake(cursorX, cursorY));
-
-	const int rcX = (int)rc.origin.x;
-	const int rcY = (int)rc.origin.y;
-	const int clampedX = std::max(rcX, std::min(cursorX, rcX + w - 1));
-	const int clampedY = std::max(rcY, std::min(cursorY, rcY + h - 1));
-
-	const double relX = (clampedX - rcX) / (double)w;
-	const double relY = (clampedY - rcY) / (double)h;
-
-	const uint32_t sw = obs_source_get_width(src);
-	const uint32_t sh = obs_source_get_height(src);
-	if (sw == 0 || sh == 0)
-		return false;
-
-	sx = (float)(relX * (double)sw);
-	sy = (float)(relY * (double)sh);
+	sx = (float)(relX * cw);
+	sy = (float)(relY * ch);
 	return true;
-#elif defined(__linux__)
-	LinuxRect rc{};
-	bool haveRect = false;
-	const bool isMonitorCap = (strcmp(id, "monitor_capture") == 0 || strcmp(id, "display_capture") == 0 ||
-				   strcmp(id, "screen_capture") == 0 || strcmp(id, "xshm_input") == 0 ||
-				   (strstr(id, "monitor") && strstr(id, "capture")));
-
-	if (isMonitorCap) {
-		haveRect = match_monitor_rect(src, rc);
-	} else if (strcmp(id, "window_capture") == 0 || strcmp(id, "xcomposite_input") == 0 ||
-		   strcmp(id, "pipewire-screen-capture-source") == 0 || strcmp(id, "pipewire-window-capture-source") == 0) {
-		haveRect = match_window_rect_for_source(src, rc);
-	}
-
-	if (!haveRect) {
-		if (isMonitorCap)
-			return false;
-		/* Fallback: use entire virtual screen from XRandR. */
-		Display *dpy = XOpenDisplay(nullptr);
-		if (dpy) {
-			int screen = DefaultScreen(dpy);
-			rc.x = 0;
-			rc.y = 0;
-			rc.w = DisplayWidth(dpy, screen);
-			rc.h = DisplayHeight(dpy, screen);
-			XCloseDisplay(dpy);
-			haveRect = (rc.w > 0 && rc.h > 0);
-		}
-		if (!haveRect)
-			return false;
-	}
-
-	if (rc.w <= 0 || rc.h <= 0)
-		return false;
-
-	cursorInside = !(cursorX < rc.x || cursorX >= rc.x + rc.w || cursorY < rc.y || cursorY >= rc.y + rc.h);
-
-	const int clampedX = std::max(rc.x, std::min(cursorX, rc.x + rc.w - 1));
-	const int clampedY = std::max(rc.y, std::min(cursorY, rc.y + rc.h - 1));
-
-	const double relX = (clampedX - rc.x) / (double)rc.w;
-	const double relY = (clampedY - rc.y) / (double)rc.h;
-
-	const uint32_t sw = obs_source_get_width(src);
-	const uint32_t sh = obs_source_get_height(src);
-	if (sw == 0 || sh == 0)
-		return false;
-
-	sx = (float)(relX * (double)sw);
-	sy = (float)(relY * (double)sh);
-	return true;
-#else
-	(void)cursorX;
-	(void)cursorY;
-	(void)sx;
-	(void)sy;
-	return false;
-#endif
 }
 
-void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
-{
-	if (!item)
-		return;
 
-	obs_sceneitem_get_pos(item, &orig.pos);
-	obs_sceneitem_get_scale(item, &orig.scale);
-	orig.rot = obs_sceneitem_get_rot(item);
-	orig.align = obs_sceneitem_get_alignment(item);
-	orig.boundsType = obs_sceneitem_get_bounds_type(item);
-	orig.boundsAlign = obs_sceneitem_get_bounds_alignment(item);
-	obs_sceneitem_get_bounds(item, &orig.bounds);
-	obs_sceneitem_get_crop(item, &orig.crop);
-	orig.valid = true;
-	obs_sceneitem_set_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
-	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_NONE);
-	vec2 zb{};
-	zb.x = 0.0f; zb.y = 0.0f;
-	obs_sceneitem_set_bounds(item, &zb);
-}
-
-void ZoominatorController::restoreOriginal(obs_sceneitem_t *item)
-{
-	if (!item || !orig.valid)
-		return;
-
-	obs_sceneitem_set_pos(item, &orig.pos);
-	obs_sceneitem_set_scale(item, &orig.scale);
-	obs_sceneitem_set_rot(item, orig.rot);
-	obs_sceneitem_set_alignment(item, orig.align);
-	obs_sceneitem_set_bounds_type(item, orig.boundsType);
-	obs_sceneitem_set_bounds_alignment(item, orig.boundsAlign);
-	obs_sceneitem_set_bounds(item, &orig.bounds);
-	obs_sceneitem_set_crop(item, &orig.crop);
-}
-
-void ZoominatorController::rebuildMarkerImage(int opacity255)
+void ZoominatorController::rebuildMarkerImage()
 {
 	const int size = std::clamp(markerSize, 6, 512);
 	const QString path = markerImagePath();
@@ -1575,13 +1423,12 @@ void ZoominatorController::rebuildMarkerImage(int opacity255)
 	QPainter painter(&img);
 	painter.setRenderHint(QPainter::Antialiasing, true);
 
-	const int effectiveOpacity = std::clamp(opacity255, 0, 255);
 	QColor stroke = QColor::fromRgba(markerColor);
 	if (!stroke.isValid())
 		stroke = QColor(255, 0, 0, 255);
 	if (stroke.alpha() == 0)
 		stroke.setAlpha(255);
-	stroke.setAlpha((stroke.alpha() * effectiveOpacity) / 255);
+	stroke.setAlpha(255);
 
 	const qreal thickness = std::clamp<qreal>((qreal)markerThickness, 1.0, std::max<qreal>(1.0, size / 2.0 - 2.0));
 	const qreal margin = thickness * 0.5 + 1.5;
@@ -1598,12 +1445,54 @@ void ZoominatorController::rebuildMarkerImage(int opacity255)
 	img.save(path, "PNG");
 }
 
+void ZoominatorController::ensureMarkerFilter()
+{
+	if (!markerSource)
+		return;
+
+	if (markerFilter) {
+		obs_source_t *existing = obs_source_get_filter_by_name(markerSource, "ZoominatorOpacity");
+		if (existing) {
+			obs_source_release(existing);
+			return;
+		}
+		obs_source_release(markerFilter);
+		markerFilter = nullptr;
+	}
+
+	obs_data_t *fsettings = obs_data_create();
+	obs_data_set_double(fsettings, "opacity", 100.0);
+	markerFilter = obs_source_create_private("color_filter", "ZoominatorOpacity", fsettings);
+	obs_data_release(fsettings);
+
+	if (markerFilter)
+		obs_source_filter_add(markerSource, markerFilter);
+}
+
+void ZoominatorController::applyMarkerOpacity(int opacity255)
+{
+	ensureMarkerFilter();
+	if (!markerFilter)
+		return;
+
+	const int clamped = std::clamp(opacity255, 0, 255);
+	if (markerCurrentOpacity == clamped)
+		return;
+
+	markerCurrentOpacity = clamped;
+	const double opacityPct = clamped / 255.0 * 100.0;
+	obs_data_t *fsettings = obs_data_create();
+	obs_data_set_double(fsettings, "opacity", opacityPct);
+	obs_source_update(markerFilter, fsettings);
+	obs_data_release(fsettings);
+}
+
 void ZoominatorController::ensureMarkerSource()
 {
-	rebuildMarkerImage(255);
-
 	if (markerSource)
 		return;
+
+	rebuildMarkerImage();
 
 	const QString path = markerImagePath();
 	if (path.isEmpty())
@@ -1614,6 +1503,9 @@ void ZoominatorController::ensureMarkerSource()
 	obs_data_set_bool(settings, "unload", false);
 	markerSource = obs_source_create_private("image_source", kZoominatorMarkerSourceName, settings);
 	obs_data_release(settings);
+
+	if (markerSource)
+		ensureMarkerFilter();
 }
 
 obs_sceneitem_t *ZoominatorController::ensureMarkerItem(obs_scene_t *scene)
@@ -1655,6 +1547,7 @@ obs_sceneitem_t *ZoominatorController::ensureMarkerItem(obs_scene_t *scene)
 	obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
 	obs_sceneitem_set_locked(item, true);
 	obs_sceneitem_set_visible(item, true);
+	obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
 	return item;
 }
 
@@ -1687,14 +1580,17 @@ void ZoominatorController::hideMarkerInScene(obs_scene_t *scene)
 		obs_sceneitem_set_visible(finder.found, false);
 }
 
-void ZoominatorController::updateMarkerAppearance(int opacity255)
+void ZoominatorController::updateMarkerAppearance()
 {
-	const int clampedOpacity = std::clamp(opacity255, 0, 255);
-	const uint32_t appearanceHash = ((uint32_t)std::clamp(markerSize, 6, 512) << 24) ^ ((uint32_t)std::clamp(markerThickness, 1, 64) << 16) ^ markerColor;
-	if (markerSource && markerAppearanceHash == appearanceHash && markerRenderedOpacity == clampedOpacity)
+	const uint32_t appearanceHash =
+		((uint32_t)std::clamp(markerSize, 6, 512) << 24) ^
+		((uint32_t)std::clamp(markerThickness, 1, 64) << 16) ^
+		markerColor;
+
+	if (markerSource && markerAppearanceHash == appearanceHash)
 		return;
 
-	rebuildMarkerImage(clampedOpacity);
+	rebuildMarkerImage();
 	ensureMarkerSource();
 	if (!markerSource)
 		return;
@@ -1706,7 +1602,7 @@ void ZoominatorController::updateMarkerAppearance(int opacity255)
 	obs_source_update(markerSource, settings);
 	obs_data_release(settings);
 	markerAppearanceHash = appearanceHash;
-	markerRenderedOpacity = clampedOpacity;
+	markerCurrentOpacity = -1;
 }
 
 bool ZoominatorController::captureMarkerClickPosition()
@@ -1714,18 +1610,10 @@ bool ZoominatorController::captureMarkerClickPosition()
 	if (!showCursorMarker || !markerOnlyOnClick)
 		return false;
 
-	obs_sceneitem_t *item = findTargetItemInCurrentScene();
-	if (!item)
-		return false;
-
-	obs_source_t *src = obs_sceneitem_get_source(item);
-	if (!src)
-		return false;
-
 	int cx = 0, cy = 0;
 	float mx = 0.f, my = 0.f;
 	bool inside = false;
-	const bool mapped = getCursorPos(cx, cy) && mapCursorToSourcePixels(src, cx, cy, mx, my, inside);
+	const bool mapped = getCursorPos(cx, cy) && mapCursorToScenePixels(cx, cy, mx, my, inside);
 	if (!mapped || !inside)
 		return false;
 
@@ -1740,8 +1628,6 @@ bool ZoominatorController::captureMarkerClickPosition()
 	markerClickFlashHoldUntilMs = nowMs + kMarkerFadeInMs + kMarkerHoldMs;
 	markerClickFlashFadeOutEndMs = markerClickFlashHoldUntilMs + kMarkerFadeOutMs;
 	ensureTicking(true);
-	if (debug)
-		blog(LOG_INFO, "[Zoominator] Marker anchor captured at %.2f, %.2f", (double)mx, (double)my);
 	return true;
 }
 
@@ -1795,17 +1681,157 @@ void ZoominatorController::updateMarkerPosition(obs_scene_t *scene, double x, do
 	if (!item)
 		return;
 
-	updateMarkerAppearance(clampedOpacity);
+	updateMarkerAppearance();
+	applyMarkerOpacity(clampedOpacity);
+
 	vec2 pos{};
 	pos.x = (float)x;
 	pos.y = (float)y;
 	obs_sceneitem_set_pos(item, &pos);
-	obs_sceneitem_set_visible(item, true);
+
+	if (!obs_sceneitem_visible(item))
+		obs_sceneitem_set_visible(item, true);
+
+	obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
 }
 
-void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, double t)
+
+void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
 {
-	if (!item || !src || !orig.valid)
+	if (!item)
+		return;
+	OrigState orig{};
+	obs_sceneitem_get_pos(item, &orig.pos);
+	obs_sceneitem_get_scale(item, &orig.scale);
+	orig.rot = obs_sceneitem_get_rot(item);
+	orig.align = obs_sceneitem_get_alignment(item);
+	orig.boundsType = obs_sceneitem_get_bounds_type(item);
+	orig.boundsAlign = obs_sceneitem_get_bounds_alignment(item);
+	obs_sceneitem_get_bounds(item, &orig.bounds);
+	obs_sceneitem_get_crop(item, &orig.crop);
+
+	float renderedW = 0.0f;
+	float renderedH = 0.0f;
+
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	float visibleW = 0.0f;
+	float visibleH = 0.0f;
+	if (src) {
+		const float sw = (float)obs_source_get_width(src);
+		const float sh = (float)obs_source_get_height(src);
+		visibleW = sw - (float)orig.crop.left - (float)orig.crop.right;
+		visibleH = sh - (float)orig.crop.top - (float)orig.crop.bottom;
+	}
+	if (visibleW <= 0.0f)
+		visibleW = 1.0f;
+	if (visibleH <= 0.0f)
+		visibleH = 1.0f;
+
+	if (orig.boundsType == OBS_BOUNDS_NONE || orig.bounds.x <= 0.0f ||
+	    orig.bounds.y <= 0.0f) {
+		renderedW = visibleW * orig.scale.x;
+		renderedH = visibleH * orig.scale.y;
+	} else {
+		const float sx = orig.bounds.x / visibleW;
+		const float sy = orig.bounds.y / visibleH;
+
+		renderedW = orig.bounds.x;
+		renderedH = orig.bounds.y;
+		orig.effectiveScale.x = sx;
+		orig.effectiveScale.y = sy;
+	}
+
+	if (orig.boundsType == OBS_BOUNDS_NONE || orig.bounds.x <= 0.0f ||
+	    orig.bounds.y <= 0.0f) {
+		orig.effectiveScale.x = renderedW / visibleW;
+		orig.effectiveScale.y = renderedH / visibleH;
+	}
+
+	orig.effectivePos = orig.pos;
+	if (orig.align & OBS_ALIGN_RIGHT)
+		orig.effectivePos.x -= renderedW;
+	else if (!(orig.align & OBS_ALIGN_LEFT))
+		orig.effectivePos.x -= renderedW * 0.5f;
+
+	if (orig.align & OBS_ALIGN_BOTTOM)
+		orig.effectivePos.y -= renderedH;
+	else if (!(orig.align & OBS_ALIGN_TOP))
+		orig.effectivePos.y -= renderedH * 0.5f;
+
+	orig.valid = true;
+
+	SceneItemState state{};
+	state.item = item;
+	state.orig = orig;
+	sceneItems.push_back(state);
+}
+
+void ZoominatorController::captureOriginalSceneItems(const std::vector<obs_sceneitem_t *> &items)
+{
+	sceneItems.clear();
+	sceneContentBoundsValid = false;
+	for (auto *item : items)
+		captureOriginal(item);
+
+	for (const auto &state : sceneItems) {
+		if (!state.item || !state.orig.valid)
+			continue;
+		obs_source_t *src = obs_sceneitem_get_source(state.item);
+		if (!src)
+			continue;
+		const float sw = (float)obs_source_get_width(src);
+		const float sh = (float)obs_source_get_height(src);
+		const float visibleW = std::max(1.0f, sw - (float)state.orig.crop.left - (float)state.orig.crop.right);
+		const float visibleH = std::max(1.0f, sh - (float)state.orig.crop.top - (float)state.orig.crop.bottom);
+		const float minX = state.orig.effectivePos.x;
+		const float minY = state.orig.effectivePos.y;
+		const float maxX = minX + visibleW * state.orig.effectiveScale.x;
+		const float maxY = minY + visibleH * state.orig.effectiveScale.y;
+
+		if (!sceneContentBoundsValid) {
+			sceneContentMin.x = minX;
+			sceneContentMin.y = minY;
+			sceneContentMax.x = maxX;
+			sceneContentMax.y = maxY;
+			sceneContentBoundsValid = true;
+		} else {
+			sceneContentMin.x = std::min(sceneContentMin.x, minX);
+			sceneContentMin.y = std::min(sceneContentMin.y, minY);
+			sceneContentMax.x = std::max(sceneContentMax.x, maxX);
+			sceneContentMax.y = std::max(sceneContentMax.y, maxY);
+		}
+	}
+}
+
+void ZoominatorController::restoreOriginal(obs_sceneitem_t *item)
+{
+	if (!item)
+		return;
+	for (const auto &state : sceneItems) {
+		if (state.item != item || !state.orig.valid)
+			continue;
+		obs_sceneitem_set_pos(item, &state.orig.pos);
+		obs_sceneitem_set_scale(item, &state.orig.scale);
+		obs_sceneitem_set_rot(item, state.orig.rot);
+		obs_sceneitem_set_alignment(item, state.orig.align);
+		obs_sceneitem_set_bounds_type(item, state.orig.boundsType);
+		obs_sceneitem_set_bounds_alignment(item, state.orig.boundsAlign);
+		obs_sceneitem_set_bounds(item, &state.orig.bounds);
+		obs_sceneitem_set_crop(item, &state.orig.crop);
+		return;
+	}
+}
+
+void ZoominatorController::restoreOriginalSceneItems(const std::vector<obs_sceneitem_t *> &items)
+{
+	for (auto *item : items)
+		restoreOriginal(item);
+}
+
+
+void ZoominatorController::applyZoomToScene(const std::vector<obs_sceneitem_t *> &items, double t)
+{
+	if (items.empty() || sceneItems.empty())
 		return;
 
 	obs_source_t *sceneSource = obs_frontend_get_current_scene();
@@ -1817,32 +1843,28 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 	const double zTarget = (zoomFactor <= 1.0) ? 1.0 : zoomFactor;
 	const double z = 1.0 + (zTarget - 1.0) * tt;
 
-	const uint32_t sw = obs_source_get_width(src);
-	const uint32_t sh = obs_source_get_height(src);
-	if (sw == 0 || sh == 0) {
-		obs_sceneitem_set_pos(item, &orig.pos);
-		return;
-	}
+	obs_video_info ovi{};
+	const bool haveVi = obs_get_video_info(&ovi);
+	const double cw = haveVi ? (double)ovi.base_width : 1920.0;
+	const double ch = haveVi ? (double)ovi.base_height : 1080.0;
+	const double centerX = cw * 0.5;
+	const double centerY = ch * 0.5;
 
-	obs_sceneitem_crop crop{};
-	obs_sceneitem_get_crop(item, &crop);
-	const int32_t visW_i = (int32_t)sw - (int32_t)crop.left - (int32_t)crop.right;
-	const int32_t visH_i = (int32_t)sh - (int32_t)crop.top - (int32_t)crop.bottom;
-	const double visW = (visW_i > 0) ? (double)visW_i : (double)sw;
-	const double visH = (visH_i > 0) ? (double)visH_i : (double)sh;
-
-	float fx = (float)sw * 0.5f;
-	float fy = (float)sh * 0.5f;
-	float markerSourceX = fx;
-	float markerSourceY = fy;
+	float fx = (float)centerX;
+	float fy = (float)centerY;
+	float anchorX = (float)centerX;
+	float anchorY = (float)centerY;
+	float markerSceneX = fx;
+	float markerSceneY = fy;
 	bool markerHasPoint = false;
 
 	int cx = 0, cy = 0;
 	float mx = 0.f, my = 0.f;
 	bool inside = false;
-	const bool mapped = getCursorPos(cx, cy) && mapCursorToSourcePixels(src, cx, cy, mx, my, inside);
+	const bool mapped = getCursorPos(cx, cy) && mapCursorToScenePixels(cx, cy, mx, my, inside);
 
 	if (followMouse && followMouseRuntimeEnabled) {
+		targetHasPos = false;
 		if (mapped) {
 			if (!followHasPos) {
 				followX = mx;
@@ -1856,107 +1878,98 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 			}
 			fx = followX;
 			fy = followY;
+			anchorX = mx;
+			anchorY = my;
 		} else if (followHasPos) {
 			fx = followX;
 			fy = followY;
+			anchorX = followX;
+			anchorY = followY;
 		}
 	} else {
-		if (!followHasPos) {
-			if (mapped) {
-				followX = mx;
-				followY = my;
-				followHasPos = true;
-				fx = followX;
-				fy = followY;
+		if (!targetHasPos) {
+			if (followHasPos) {
+				targetX = followX;
+				targetY = followY;
+			} else if (mapped) {
+				targetX = mx;
+				targetY = my;
+			} else {
+				targetX = (float)centerX;
+				targetY = (float)centerY;
 			}
-		} else {
-			fx = followX;
-			fy = followY;
+			targetHasPos = true;
 		}
+		fx = targetX;
+		fy = targetY;
+		anchorX = targetX;
+		anchorY = targetY;
 	}
 
 	if (showCursorMarker) {
 		if (markerOnlyOnClick) {
 			if (markerClickHasPos) {
-				markerSourceX = markerClickX;
-				markerSourceY = markerClickY;
+				markerSceneX = markerClickX;
+				markerSceneY = markerClickY;
 				markerHasPoint = true;
 			}
 		} else if (mapped) {
-			markerSourceX = mx;
-			markerSourceY = my;
-			markerHasPoint = true;
-		} else if (followHasPos) {
-			markerSourceX = followX;
-			markerSourceY = followY;
+			markerSceneX = mx;
+			markerSceneY = my;
 			markerHasPoint = true;
 		}
 	}
 
-	obs_video_info ovi{};
-	const bool haveVi = obs_get_video_info(&ovi);
-	const double cw = haveVi ? (double)ovi.base_width : 1920.0;
-	const double ch = haveVi ? (double)ovi.base_height : 1080.0;
+	const double baseMinX = sceneContentBoundsValid ? (double)sceneContentMin.x : 0.0;
+	const double baseMinY = sceneContentBoundsValid ? (double)sceneContentMin.y : 0.0;
+	const double baseMaxX = sceneContentBoundsValid ? (double)sceneContentMax.x : cw;
+	const double baseMaxY = sceneContentBoundsValid ? (double)sceneContentMax.y : ch;
+	const double refMinX = (double)anchorX + (baseMinX - (double)fx) * z;
+	const double refMaxX = (double)anchorX + (baseMaxX - (double)fx) * z;
+	const double refMinY = (double)anchorY + (baseMinY - (double)fy) * z;
+	const double refMaxY = (double)anchorY + (baseMaxY - (double)fy) * z;
+	const double minOffsetX = cw - refMaxX;
+	const double maxOffsetX = -refMinX;
+	const double minOffsetY = ch - refMaxY;
+	const double maxOffsetY = -refMinY;
 
-	double cover = 1.0;
-	
-	if (portraitCover) {
-		const double sx = cw / visW;
-		const double sy = ch / visH;
-		cover = (sx > sy) ? sx : sy;
-	}
+	double offsetX = 0.0;
+	double offsetY = 0.0;
 
-	vec2 sc = orig.scale;
-	if (portraitCover) {
-		sc.x = (float)std::max((double)sc.x, cover);
-		sc.y = (float)std::max((double)sc.y, cover);
-	}
-	sc.x *= (float)z;
-	sc.y *= (float)z;
-	obs_sceneitem_set_scale(item, &sc);
-
-	const double centerX = cw * 0.5;
-	const double centerY = ch * 0.5;
-
-	const double relFx = clampd((double)fx / (double)sw, 0.0, 1.0);
-	const double relFy = clampd((double)fy / (double)sh, 0.0, 1.0);
-	fx = (float)((double)crop.left + relFx * visW);
-	fy = (float)((double)crop.top + relFy * visH);
-	const double fxAdj = (double)fx - (double)crop.left;
-	const double fyAdj = (double)fy - (double)crop.top;
-
-	double markerFxAdj = fxAdj;
-	double markerFyAdj = fyAdj;
-	if (markerHasPoint) {
-		const double markerRelFx = clampd((double)markerSourceX / (double)sw, 0.0, 1.0);
-		const double markerRelFy = clampd((double)markerSourceY / (double)sh, 0.0, 1.0);
-		const double markerFx = (double)crop.left + markerRelFx * visW;
-		const double markerFy = (double)crop.top + markerRelFy * visH;
-		markerFxAdj = markerFx - (double)crop.left;
-		markerFyAdj = markerFy - (double)crop.top;
-	}
-	double tlx = centerX - fxAdj * (double)sc.x;
-	double tly = centerY - fyAdj * (double)sc.y;
-	const double itemW = visW * (double)sc.x;
-	const double itemH = visH * (double)sc.y;
-
-	if (itemW >= cw) {
-		const double minX = cw - itemW;
-		tlx = clampd(tlx, minX, 0.0);
+	if (minOffsetX <= maxOffsetX) {
+		offsetX = clampd(0.0, minOffsetX, maxOffsetX);
 	} else {
-		tlx = (cw - itemW) * 0.5;
-	}
-	if (itemH >= ch) {
-		const double minY = ch - itemH;
-		tly = clampd(tly, minY, 0.0);
-	} else {
-		tly = (ch - itemH) * 0.5;
+		offsetX = (minOffsetX + maxOffsetX) * 0.5;
 	}
 
-	vec2 pos{};
-	pos.x = (float)tlx;
-	pos.y = (float)tly;
-	obs_sceneitem_set_pos(item, &pos);
+	if (minOffsetY <= maxOffsetY) {
+		offsetY = clampd(0.0, minOffsetY, maxOffsetY);
+	} else {
+		offsetY = (minOffsetY + maxOffsetY) * 0.5;
+	}
+
+	const uint32_t topLeftAlign = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
+	for (const auto &state : sceneItems) {
+		if (!state.item || !state.orig.valid)
+			continue;
+
+		if (obs_sceneitem_get_bounds_type(state.item) != OBS_BOUNDS_NONE)
+			obs_sceneitem_set_bounds_type(state.item, OBS_BOUNDS_NONE);
+		if (obs_sceneitem_get_alignment(state.item) != topLeftAlign)
+			obs_sceneitem_set_alignment(state.item, topLeftAlign);
+
+		vec2 sc{};
+		sc.x = state.orig.effectiveScale.x * (float)z;
+		sc.y = state.orig.effectiveScale.y * (float)z;
+		obs_sceneitem_set_scale(state.item, &sc);
+
+		vec2 pos{};
+		pos.x = (float)((double)anchorX +
+				((double)state.orig.effectivePos.x - (double)fx) * z + offsetX);
+		pos.y = (float)((double)anchorY +
+				((double)state.orig.effectivePos.y - (double)fy) * z + offsetY);
+		obs_sceneitem_set_pos(state.item, &pos);
+	}
 
 	if (scene) {
 		int markerOpacity = 255;
@@ -1966,9 +1979,11 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 		}
 
 		if (showCursorMarker && markerHasPoint && markerOpacity > 0) {
-			const double markerX = tlx + markerFxAdj * (double)sc.x;
-			const double markerY = tly + markerFyAdj * (double)sc.y;
-			updateMarkerPosition(scene, markerX, markerY, markerOpacity);
+			const double markerDisplayX =
+				(double)anchorX + ((double)markerSceneX - (double)fx) * z + offsetX;
+			const double markerDisplayY =
+				(double)anchorY + ((double)markerSceneY - (double)fy) * z + offsetY;
+			updateMarkerPosition(scene, markerDisplayX, markerDisplayY, markerOpacity);
 		} else {
 			hideMarkerInScene(scene);
 		}
@@ -1977,25 +1992,21 @@ void ZoominatorController::applyZoom(obs_sceneitem_t *item, obs_source_t *src, d
 
 void ZoominatorController::onTick()
 {
-	obs_sceneitem_t *item = findTargetItemInCurrentScene();
-	if (!item) {
+	std::vector<obs_sceneitem_t *> items;
+	enumerateTargetItemsInCurrentScene(items);
+	if (items.empty()) {
 		if (debug)
-			blog(LOG_WARNING, "[Zoominator] No target item (select a capture source).");
-		ensureTicking(false);
-		resetState();
-		return;
-	}
-
-	obs_source_t *src = obs_sceneitem_get_source(item);
-	if (!src) {
+			blog(LOG_WARNING, "[Zoominator] No movable scene items in current scene.");
 		ensureTicking(false);
 		resetState();
 		return;
 	}
 
 	if (!zoomActive) {
-		captureOriginal(item);
-		zoomActive = true;
+		captureOriginalSceneItems(items);
+		zoomActive = !sceneItems.empty();
+		if (!zoomActive)
+			return;
 	}
 
 	const int dur = (animDir >= 0) ? animInMs : animOutMs;
@@ -2009,48 +2020,77 @@ void ZoominatorController::onTick()
 	if (animT <= 0.0) {
 		animT = 0.0;
 		animDir = 0;
+		targetHasPos = false;
 	}
 
-	const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-	const bool keepMarkerFlashAlive = isMarkerFlashActive(nowMs);
-
 	if (animT == 0.0 && animDir == 0) {
-		if (keepMarkerFlashAlive) {
-			applyZoom(item, src, 0.0);
-			return;
-		}
-
-		restoreOriginal(item);
+		restoreOriginalSceneItems(items);
 		ensureTicking(false);
 		resetState();
 		return;
 	}
 
-	applyZoom(item, src, animT);
+	applyZoomToScene(items, animT);
 }
 
 static ZoominatorController *g_ctl = nullptr;
 
-static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantWin)
+struct ModifierState {
+	bool leftCtrl = false;
+	bool rightCtrl = false;
+	bool leftAlt = false;
+	bool rightAlt = false;
+	bool leftShift = false;
+	bool rightShift = false;
+	bool leftWin = false;
+	bool rightWin = false;
+};
+
+static inline bool family_matches(bool wantAny, bool wantLeft, bool wantRight, bool haveLeft, bool haveRight)
 {
+	if (!wantAny && !wantLeft && !wantRight)
+		return !haveLeft && !haveRight;
+	if (wantLeft && !haveLeft)
+		return false;
+	if (wantRight && !haveRight)
+		return false;
+	if (!wantAny) {
+		if (!wantLeft && haveLeft)
+			return false;
+		if (!wantRight && haveRight)
+			return false;
+	}
+	return wantAny ? (haveLeft || haveRight) : true;
+}
+
+static ModifierState current_modifiers()
+{
+	ModifierState state;
 #if defined(_WIN32)
 	auto down = [](int vk) {
 		return (GetAsyncKeyState(vk) & 0x8000) != 0;
 	};
-	const bool c = down(VK_CONTROL) || down(VK_LCONTROL) || down(VK_RCONTROL);
-	const bool a = down(VK_MENU) || down(VK_LMENU) || down(VK_RMENU);
-	const bool s = down(VK_SHIFT) || down(VK_LSHIFT) || down(VK_RSHIFT);
-	const bool w = down(VK_LWIN) || down(VK_RWIN);
+	state.leftCtrl = down(VK_LCONTROL);
+	state.rightCtrl = down(VK_RCONTROL);
+	state.leftAlt = down(VK_LMENU);
+	state.rightAlt = down(VK_RMENU);
+	state.leftShift = down(VK_LSHIFT);
+	state.rightShift = down(VK_RSHIFT);
+	state.leftWin = down(VK_LWIN);
+	state.rightWin = down(VK_RWIN);
 #elif defined(__APPLE__)
 	auto down = [](int vk) {
 		return CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, (CGKeyCode)vk);
 	};
-	const bool c = down(kVK_Control) || down(kVK_RightControl);
-	const bool a = down(kVK_Option) || down(kVK_RightOption);
-	const bool s = down(kVK_Shift) || down(kVK_RightShift);
-	const bool w = down(kVK_Command) || down(kVK_RightCommand);
+	state.leftCtrl = down(kVK_Control);
+	state.rightCtrl = down(kVK_RightControl);
+	state.leftAlt = down(kVK_Option);
+	state.rightAlt = down(kVK_RightOption);
+	state.leftShift = down(kVK_Shift);
+	state.rightShift = down(kVK_RightShift);
+	state.leftWin = down(kVK_Command);
+	state.rightWin = down(kVK_RightCommand);
 #elif defined(__linux__)
-	bool c = false, a = false, s = false, w = false;
 	Display *dpy = XOpenDisplay(nullptr);
 	if (dpy) {
 		char keys[32];
@@ -2061,23 +2101,32 @@ static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantW
 				return false;
 			return (keys[kc / 8] & (1 << (kc % 8))) != 0;
 		};
-		c = isDown(XK_Control_L) || isDown(XK_Control_R);
-		a = isDown(XK_Alt_L) || isDown(XK_Alt_R);
-		s = isDown(XK_Shift_L) || isDown(XK_Shift_R);
-		w = isDown(XK_Super_L) || isDown(XK_Super_R);
+		state.leftCtrl = isDown(XK_Control_L);
+		state.rightCtrl = isDown(XK_Control_R);
+		state.leftAlt = isDown(XK_Alt_L);
+		state.rightAlt = isDown(XK_Alt_R);
+		state.leftShift = isDown(XK_Shift_L);
+		state.rightShift = isDown(XK_Shift_R);
+		state.leftWin = isDown(XK_Super_L);
+		state.rightWin = isDown(XK_Super_R);
 		XCloseDisplay(dpy);
 	}
-#else
-	const bool c = false, a = false, s = false, w = false;
 #endif
+	return state;
+}
 
-	if (wantCtrl != c)
+static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantWin,
+			 bool wantLeftCtrl, bool wantRightCtrl, bool wantLeftAlt, bool wantRightAlt,
+			 bool wantLeftShift, bool wantRightShift, bool wantLeftWin, bool wantRightWin)
+{
+	const ModifierState state = current_modifiers();
+	if (!family_matches(wantCtrl, wantLeftCtrl, wantRightCtrl, state.leftCtrl, state.rightCtrl))
 		return false;
-	if (wantAlt != a)
+	if (!family_matches(wantAlt, wantLeftAlt, wantRightAlt, state.leftAlt, state.rightAlt))
 		return false;
-	if (wantShift != s)
+	if (!family_matches(wantShift, wantLeftShift, wantRightShift, state.leftShift, state.rightShift))
 		return false;
-	if (wantWin != w)
+	if (!family_matches(wantWin, wantLeftWin, wantRightWin, state.leftWin, state.rightWin))
 		return false;
 	return true;
 }
@@ -2107,13 +2156,17 @@ static inline bool is_wanted_modifier_vk(int vk, const ZoominatorController *ctl
 {
 	if (!ctl)
 		return false;
-	if (ctl->modCtrl && (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL))
+	if ((ctl->modCtrl && (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL)) ||
+	    (ctl->modLeftCtrl && vk == VK_LCONTROL) || (ctl->modRightCtrl && vk == VK_RCONTROL))
 		return true;
-	if (ctl->modAlt && (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU))
+	if ((ctl->modAlt && (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU)) ||
+	    (ctl->modLeftAlt && vk == VK_LMENU) || (ctl->modRightAlt && vk == VK_RMENU))
 		return true;
-	if (ctl->modShift && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT))
+	if ((ctl->modShift && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)) ||
+	    (ctl->modLeftShift && vk == VK_LSHIFT) || (ctl->modRightShift && vk == VK_RSHIFT))
 		return true;
-	if (ctl->modWin && (vk == VK_LWIN || vk == VK_RWIN))
+	if ((ctl->modWin && (vk == VK_LWIN || vk == VK_RWIN)) || (ctl->modLeftWin && vk == VK_LWIN) ||
+	    (ctl->modRightWin && vk == VK_RWIN))
 		return true;
 	return false;
 }
@@ -2133,6 +2186,27 @@ static bool vk_matches(int pressedVk, int wantVk)
 	}
 
 	return false;
+}
+
+
+static bool is_modifier_only_hotkey(int vk)
+{
+	switch (vk) {
+	case VK_CONTROL:
+	case VK_LCONTROL:
+	case VK_RCONTROL:
+	case VK_MENU:
+	case VK_LMENU:
+	case VK_RMENU:
+	case VK_SHIFT:
+	case VK_LSHIFT:
+	case VK_RSHIFT:
+	case VK_LWIN:
+	case VK_RWIN:
+		return true;
+	default:
+		return false;
+	}
 }
 
 LRESULT CALLBACK ZoominatorController::kb_hook_proc(int nCode, WPARAM wParam, LPARAM lParam)
@@ -2164,15 +2238,13 @@ LRESULT CALLBACK ZoominatorController::kb_hook_proc(int nCode, WPARAM wParam, LP
 			if (!is_wanted_modifier_vk(vk, g_ctl))
 				return CallNextHookEx((HHOOK)g_ctl->keyboardHook, nCode, wParam, lParam);
 
-			const bool matchNow = mods_current(g_ctl->modCtrl, g_ctl->modAlt, g_ctl->modShift, g_ctl->modWin);
-
 			if (g_ctl->hotkeyMode == "toggle") {
-				if (down && matchNow)
+				if (down)
 					g_ctl->onTriggerDown();
 			} else {
-				if (down && matchNow)
+				if (down)
 					g_ctl->onTriggerDown();
-				if (up && g_ctl->zoomPressed && !matchNow)
+				if (up && g_ctl->zoomPressed)
 					g_ctl->onTriggerUp();
 			}
 
@@ -2180,7 +2252,7 @@ LRESULT CALLBACK ZoominatorController::kb_hook_proc(int nCode, WPARAM wParam, LP
 		}
 
 		if (vk_matches(vk, g_ctl->hotkeyVk)) {
-			if (mods_current(g_ctl->modCtrl, g_ctl->modAlt, g_ctl->modShift, g_ctl->modWin)) {
+			if (mods_current(g_ctl->modCtrl, g_ctl->modAlt, g_ctl->modShift, g_ctl->modWin, g_ctl->modLeftCtrl, g_ctl->modRightCtrl, g_ctl->modLeftAlt, g_ctl->modRightAlt, g_ctl->modLeftShift, g_ctl->modRightShift, g_ctl->modLeftWin, g_ctl->modRightWin)) {
 				if (g_ctl->hotkeyMode == "toggle") {
 					if (down)
 						g_ctl->onTriggerDown();
@@ -2208,12 +2280,12 @@ LRESULT CALLBACK ZoominatorController::mouse_hook_proc(int nCode, WPARAM wParam,
 		const bool up = (wParam == WM_LBUTTONUP || wParam == WM_RBUTTONUP || wParam == WM_MBUTTONUP ||
 				 wParam == WM_XBUTTONUP);
 
-		if (down && g_ctl->markerOnlyOnClick)
+		if (down)
 			g_ctl->captureMarkerClickPosition();
 
 		if (g_ctl->triggerType == "mouse" && (down || up)) {
 			unsigned short mouseData = (unsigned short)HIWORD(m->mouseData);
-			if (mods_current(g_ctl->modCtrl, g_ctl->modAlt, g_ctl->modShift, g_ctl->modWin)) {
+			if (mods_current(g_ctl->modCtrl, g_ctl->modAlt, g_ctl->modShift, g_ctl->modWin, g_ctl->modLeftCtrl, g_ctl->modRightCtrl, g_ctl->modLeftAlt, g_ctl->modRightAlt, g_ctl->modLeftShift, g_ctl->modRightShift, g_ctl->modLeftWin, g_ctl->modRightWin)) {
 				if (g_ctl->triggerMatchesMouse((unsigned int)wParam, mouseData)) {
 					if (g_ctl->hotkeyMode == "toggle") {
 						if (down)
@@ -2243,13 +2315,17 @@ static inline bool is_wanted_modifier_vk(int vk, const ZoominatorController *ctl
 {
 	if (!ctl)
 		return false;
-	if (ctl->modCtrl && (vk == kVK_Control || vk == kVK_RightControl))
+	if ((ctl->modCtrl && (vk == kVK_Control || vk == kVK_RightControl)) ||
+	    (ctl->modLeftCtrl && vk == kVK_Control) || (ctl->modRightCtrl && vk == kVK_RightControl))
 		return true;
-	if (ctl->modAlt && (vk == kVK_Option || vk == kVK_RightOption))
+	if ((ctl->modAlt && (vk == kVK_Option || vk == kVK_RightOption)) ||
+	    (ctl->modLeftAlt && vk == kVK_Option) || (ctl->modRightAlt && vk == kVK_RightOption))
 		return true;
-	if (ctl->modShift && (vk == kVK_Shift || vk == kVK_RightShift))
+	if ((ctl->modShift && (vk == kVK_Shift || vk == kVK_RightShift)) ||
+	    (ctl->modLeftShift && vk == kVK_Shift) || (ctl->modRightShift && vk == kVK_RightShift))
 		return true;
-	if (ctl->modWin && (vk == kVK_Command || vk == kVK_RightCommand))
+	if ((ctl->modWin && (vk == kVK_Command || vk == kVK_RightCommand)) ||
+	    (ctl->modLeftWin && vk == kVK_Command) || (ctl->modRightWin && vk == kVK_RightCommand))
 		return true;
 	return false;
 }
@@ -2324,7 +2400,7 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 			}
 
 			if (vk_matches(keycode, ctl->hotkeyVk)) {
-				if (mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin)) {
+				if (mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin, ctl->modLeftCtrl, ctl->modRightCtrl, ctl->modLeftAlt, ctl->modRightAlt, ctl->modLeftShift, ctl->modRightShift, ctl->modLeftWin, ctl->modRightWin)) {
 					if (ctl->hotkeyMode == "toggle") {
 						if (down)
 							ctl->onTriggerDown();
@@ -2342,7 +2418,7 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 		if (type == kCGEventFlagsChanged) {
 			if (ctl->hotkeyVk == 0) {
 				const bool matchNow =
-					mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin);
+					mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin, ctl->modLeftCtrl, ctl->modRightCtrl, ctl->modLeftAlt, ctl->modRightAlt, ctl->modLeftShift, ctl->modRightShift, ctl->modLeftWin, ctl->modRightWin);
 				if (ctl->hotkeyMode == "toggle") {
 					if (matchNow && !ctl->zoomPressed && !ctl->zoomLatched)
 						ctl->onTriggerDown();
@@ -2363,13 +2439,14 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 				type == kCGEventOtherMouseDown);
 	const bool isMouseUp = (type == kCGEventLeftMouseUp || type == kCGEventRightMouseUp ||
 			      type == kCGEventOtherMouseUp);
-	if (isMouseDown && ctl->markerOnlyOnClick)
+
+	if (isMouseDown)
 		ctl->captureMarkerClickPosition();
 
 	if (ctl->triggerType == "mouse") {
 		if (isMouseDown || isMouseUp) {
 			const int64_t btn = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
-			if (mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin)) {
+			if (mods_current(ctl->modCtrl, ctl->modAlt, ctl->modShift, ctl->modWin, ctl->modLeftCtrl, ctl->modRightCtrl, ctl->modLeftAlt, ctl->modRightAlt, ctl->modLeftShift, ctl->modRightShift, ctl->modLeftWin, ctl->modRightWin)) {
 				if (mac_mouse_button_matches(type, btn, ctl->mouseButton)) {
 					if (ctl->hotkeyMode == "toggle") {
 						if (isMouseDown)
@@ -2400,13 +2477,17 @@ static inline bool is_wanted_modifier_vk(int vk, const ZoominatorController *ctl
 {
 	if (!ctl)
 		return false;
-	if (ctl->modCtrl && (vk == XK_Control_L || vk == XK_Control_R))
+	if ((ctl->modCtrl && (vk == XK_Control_L || vk == XK_Control_R)) ||
+	    (ctl->modLeftCtrl && vk == XK_Control_L) || (ctl->modRightCtrl && vk == XK_Control_R))
 		return true;
-	if (ctl->modAlt && (vk == XK_Alt_L || vk == XK_Alt_R))
+	if ((ctl->modAlt && (vk == XK_Alt_L || vk == XK_Alt_R)) ||
+	    (ctl->modLeftAlt && vk == XK_Alt_L) || (ctl->modRightAlt && vk == XK_Alt_R))
 		return true;
-	if (ctl->modShift && (vk == XK_Shift_L || vk == XK_Shift_R))
+	if ((ctl->modShift && (vk == XK_Shift_L || vk == XK_Shift_R)) ||
+	    (ctl->modLeftShift && vk == XK_Shift_L) || (ctl->modRightShift && vk == XK_Shift_R))
 		return true;
-	if (ctl->modWin && (vk == XK_Super_L || vk == XK_Super_R))
+	if ((ctl->modWin && (vk == XK_Super_L || vk == XK_Super_R)) ||
+	    (ctl->modLeftWin && vk == XK_Super_L) || (ctl->modRightWin && vk == XK_Super_R))
 		return true;
 	return false;
 }
@@ -2416,13 +2497,11 @@ static bool vk_matches(int pressedVk, int wantVk)
 	if (pressedVk == wantVk)
 		return true;
 
-	/* Match lowercase letters to their keysym too. */
 	if (wantVk >= XK_a && wantVk <= XK_z)
 		return pressedVk == (wantVk - XK_a + XK_A);
 	if (wantVk >= XK_A && wantVk <= XK_Z)
 		return pressedVk == (wantVk - XK_A + XK_a);
 
-	/* Match numpad to number row. */
 	if (wantVk >= XK_KP_0 && wantVk <= XK_KP_9)
 		return pressedVk == (XK_0 + (wantVk - XK_KP_0));
 	if (wantVk >= XK_0 && wantVk <= XK_9)
@@ -2468,7 +2547,6 @@ void ZoominatorController::processXInput2Events()
 			KeySym sym = XkbKeycodeToKeysym(xiDisplay, keycode, 0, 0);
 			const bool down = (evtype == XI_RawKeyPress);
 
-			/* Follow-toggle hotkey. */
 			if (followToggleHkValid && down && followToggleHotkeyVk != 0 &&
 			    vk_matches((int)sym, followToggleHotkeyVk) &&
 			    mods_current(followToggleModCtrl, followToggleModAlt, followToggleModShift,
@@ -2476,12 +2554,10 @@ void ZoominatorController::processXInput2Events()
 				toggleFollowMouseRuntime();
 			}
 
-			/* Main keyboard trigger. */
 			if (hkValid && triggerType == "keyboard") {
 				if (hotkeyVk == 0) {
-					/* Modifier-only trigger. */
 					if (is_modifier_vk((int)sym) && is_wanted_modifier_vk((int)sym, this)) {
-						const bool matchNow = mods_current(modCtrl, modAlt, modShift, modWin);
+						const bool matchNow = mods_current(modCtrl, modAlt, modShift, modWin, modLeftCtrl, modRightCtrl, modLeftAlt, modRightAlt, modLeftShift, modRightShift, modLeftWin, modRightWin);
 						if (hotkeyMode == "toggle") {
 							if (down && matchNow)
 								onTriggerDown();
@@ -2493,7 +2569,7 @@ void ZoominatorController::processXInput2Events()
 						}
 					}
 				} else if (vk_matches((int)sym, hotkeyVk)) {
-					if (mods_current(modCtrl, modAlt, modShift, modWin)) {
+					if (mods_current(modCtrl, modAlt, modShift, modWin, modLeftCtrl, modRightCtrl, modLeftAlt, modRightAlt, modLeftShift, modRightShift, modLeftWin, modRightWin)) {
 						if (hotkeyMode == "toggle") {
 							if (down)
 								onTriggerDown();
@@ -2512,17 +2588,17 @@ void ZoominatorController::processXInput2Events()
 			const bool down = (evtype == XI_RawButtonPress);
 			const bool up = (evtype == XI_RawButtonRelease);
 
-			/* Scroll wheel events are buttons 4-7 on X11, ignore them. */
+			if (down)
+				captureMarkerClickPosition();
+
 			if (button >= 4 && button <= 7) {
 				XFreeEventData(xiDisplay, &ev.xcookie);
 				continue;
 			}
 
-			if (down && markerOnlyOnClick)
-				captureMarkerClickPosition();
 
 			if (triggerType == "mouse" && (down || up)) {
-				if (mods_current(modCtrl, modAlt, modShift, modWin)) {
+				if (mods_current(modCtrl, modAlt, modShift, modWin, modLeftCtrl, modRightCtrl, modLeftAlt, modRightAlt, modLeftShift, modRightShift, modLeftWin, modRightWin)) {
 					if (linux_button_matches(button, mouseButton)) {
 						if (hotkeyMode == "toggle") {
 							if (down)
@@ -2545,7 +2621,7 @@ void ZoominatorController::processXInput2Events()
 
 bool ZoominatorController::modsMatch() const
 {
-	return mods_current(modCtrl, modAlt, modShift, modWin);
+	return mods_current(modCtrl, modAlt, modShift, modWin, modLeftCtrl, modRightCtrl, modLeftAlt, modRightAlt, modLeftShift, modRightShift, modLeftWin, modRightWin);
 }
 
 bool ZoominatorController::triggerMatchesMouse(unsigned int msg, unsigned short mouseData) const
@@ -2564,7 +2640,6 @@ bool ZoominatorController::triggerMatchesMouse(unsigned int msg, unsigned short 
 		return (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP) && mouseData == XBUTTON2;
 	return false;
 #elif defined(__linux__)
-	/* On Linux, msg holds the X11 button number, mouseData is unused. */
 	(void)mouseData;
 	return linux_button_matches((int)msg, mouseButton);
 #else
@@ -2583,6 +2658,7 @@ void ZoominatorController::onTriggerDown()
 		zoomLatched = !zoomLatched;
 		if (zoomLatched) {
 			followHasPos = false;
+			targetHasPos = false;
 			startZoomIn();
 		} else {
 			startZoomOut();
@@ -2592,6 +2668,7 @@ void ZoominatorController::onTriggerDown()
 
 	zoomPressed = true;
 	followHasPos = false;
+	targetHasPos = false;
 	startZoomIn();
 }
 
@@ -2605,12 +2682,15 @@ void ZoominatorController::onTriggerUp()
 
 void ZoominatorController::toggleFollowMouseRuntime()
 {
-	if (!followMouse)
-		return;
-
 	followMouseRuntimeEnabled = !followMouseRuntimeEnabled;
-	if (!followMouseRuntimeEnabled)
-		followHasPos = true;
+	if (!followMouseRuntimeEnabled && followHasPos) {
+		targetX = followX;
+		targetY = followY;
+		targetHasPos = true;
+	} else {
+		targetHasPos = false;
+	}
+	followHasPos = false;
 
 	if (debug) {
 		blog(LOG_INFO, "[Zoominator] Follow mouse %s", followMouseRuntimeEnabled ? "ENABLED" : "DISABLED");
@@ -2704,7 +2784,6 @@ static int qtKeyToVk(int qtKey)
 	}
 	return 0;
 #elif defined(__linux__)
-	/* On Linux we use X11 keysyms (XK_*) as our "virtual keycode" space. */
 	if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z)
 		return XK_a + (qtKey - Qt::Key_A);
 	if (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9)
@@ -2782,7 +2861,6 @@ static int qtKeyToVk(int qtKey)
 		break;
 	}
 
-	/* Fallback: many Qt keys match the corresponding X11 keysym for printable ASCII. */
 	if (qtKey >= 0x20 && qtKey <= 0x7E)
 		return qtKey;
 
@@ -2965,7 +3043,7 @@ void ZoominatorController::rebuildTriggersFromSettings()
 		QKeySequence seq(hotkeySequence);
 		if (seq.isEmpty()) {
 			hotkeyVk = 0;
-			hkValid = (modCtrl || modAlt || modShift || modWin);
+			hkValid = (modCtrl || modAlt || modShift || modWin || modLeftCtrl || modRightCtrl || modLeftAlt || modRightAlt || modLeftShift || modRightShift || modLeftWin || modRightWin);
 			if (debug)
 				blog(LOG_INFO,
 				     "[Zoominator] Hotkey empty; using modifier-only trigger (ctrl=%d alt=%d shift=%d win=%d valid=%d)",
@@ -3001,24 +3079,56 @@ void ZoominatorController::rebuildTriggersFromSettings()
 				modAlt = (hotkeyVk == VK_MENU || hotkeyVk == VK_LMENU || hotkeyVk == VK_RMENU);
 				modShift = (hotkeyVk == VK_SHIFT || hotkeyVk == VK_LSHIFT || hotkeyVk == VK_RSHIFT);
 				modWin = (hotkeyVk == VK_LWIN || hotkeyVk == VK_RWIN);
+				modLeftCtrl = (hotkeyVk == VK_LCONTROL);
+				modRightCtrl = (hotkeyVk == VK_RCONTROL);
+				modLeftAlt = (hotkeyVk == VK_LMENU);
+				modRightAlt = (hotkeyVk == VK_RMENU);
+				modLeftShift = (hotkeyVk == VK_LSHIFT);
+				modRightShift = (hotkeyVk == VK_RSHIFT);
+				modLeftWin = (hotkeyVk == VK_LWIN);
+				modRightWin = (hotkeyVk == VK_RWIN);
 #elif defined(__APPLE__)
 				modCtrl = (hotkeyVk == kVK_Control || hotkeyVk == kVK_RightControl);
 				modAlt = (hotkeyVk == kVK_Option || hotkeyVk == kVK_RightOption);
 				modShift = (hotkeyVk == kVK_Shift || hotkeyVk == kVK_RightShift);
 				modWin = (hotkeyVk == kVK_Command || hotkeyVk == kVK_RightCommand);
+				modLeftCtrl = (hotkeyVk == kVK_Control);
+				modRightCtrl = (hotkeyVk == kVK_RightControl);
+				modLeftAlt = (hotkeyVk == kVK_Option);
+				modRightAlt = (hotkeyVk == kVK_RightOption);
+				modLeftShift = (hotkeyVk == kVK_Shift);
+				modRightShift = (hotkeyVk == kVK_RightShift);
+				modLeftWin = (hotkeyVk == kVK_Command);
+				modRightWin = (hotkeyVk == kVK_RightCommand);
 #elif defined(__linux__)
 				modCtrl = (hotkeyVk == XK_Control_L || hotkeyVk == XK_Control_R);
 				modAlt = (hotkeyVk == XK_Alt_L || hotkeyVk == XK_Alt_R);
 				modShift = (hotkeyVk == XK_Shift_L || hotkeyVk == XK_Shift_R);
 				modWin = (hotkeyVk == XK_Super_L || hotkeyVk == XK_Super_R);
+				modLeftCtrl = (hotkeyVk == XK_Control_L);
+				modRightCtrl = (hotkeyVk == XK_Control_R);
+				modLeftAlt = (hotkeyVk == XK_Alt_L);
+				modRightAlt = (hotkeyVk == XK_Alt_R);
+				modLeftShift = (hotkeyVk == XK_Shift_L);
+				modRightShift = (hotkeyVk == XK_Shift_R);
+				modLeftWin = (hotkeyVk == XK_Super_L);
+				modRightWin = (hotkeyVk == XK_Super_R);
 #else
 				modCtrl = (key == Qt::Key_Control);
 				modAlt = (key == Qt::Key_Alt);
 				modShift = (key == Qt::Key_Shift);
 				modWin = (key == Qt::Key_Meta);
+				modLeftCtrl = false;
+				modRightCtrl = false;
+				modLeftAlt = false;
+				modRightAlt = false;
+				modLeftShift = false;
+				modRightShift = false;
+				modLeftWin = false;
+				modRightWin = false;
 #endif
 				hotkeyVk = 0;
-				hkValid = (modCtrl || modAlt || modShift || modWin);
+				hkValid = (modCtrl || modAlt || modShift || modWin || modLeftCtrl || modRightCtrl || modLeftAlt || modRightAlt || modLeftShift || modRightShift || modLeftWin || modRightWin);
 				if (debug)
 					blog(LOG_INFO,
 					     "[Zoominator] Single-modifier hotkey parsed; using modifier-only trigger (ctrl=%d alt=%d shift=%d win=%d valid=%d)",
@@ -3028,6 +3138,14 @@ void ZoominatorController::rebuildTriggersFromSettings()
 				modAlt = mods.testFlag(Qt::AltModifier);
 				modShift = mods.testFlag(Qt::ShiftModifier);
 				modWin = mods.testFlag(Qt::MetaModifier);
+				modLeftCtrl = false;
+				modRightCtrl = false;
+				modLeftAlt = false;
+				modRightAlt = false;
+				modLeftShift = false;
+				modRightShift = false;
+				modLeftWin = false;
+				modRightWin = false;
 
 				hkValid = (hotkeyVk != 0);
 				if (debug)
@@ -3084,7 +3202,6 @@ void ZoominatorController::installHooks()
 			return;
 		}
 
-		/* Check for XInput2 extension. */
 		int event, error;
 		if (!XQueryExtension(xiDisplay, "XInputExtension", &xiOpcode, &event, &error)) {
 			blog(LOG_WARNING, "[Zoominator] XInput2 extension not available.");
@@ -3093,7 +3210,6 @@ void ZoominatorController::installHooks()
 			return;
 		}
 
-		/* Request XInput 2.0. */
 		int major = 2, minor = 0;
 		if (XIQueryVersion(xiDisplay, &major, &minor) != Success) {
 			blog(LOG_WARNING, "[Zoominator] XInput2 version query failed.");
@@ -3102,7 +3218,6 @@ void ZoominatorController::installHooks()
 			return;
 		}
 
-		/* Select raw key and button events on the root window. */
 		unsigned char mask_bits[(XI_LASTEVENT + 7) / 8] = {};
 		XIEventMask evmask;
 		evmask.deviceid = XIAllMasterDevices;
@@ -3115,7 +3230,6 @@ void ZoominatorController::installHooks()
 		XISelectEvents(xiDisplay, DefaultRootWindow(xiDisplay), &evmask, 1);
 		XFlush(xiDisplay);
 
-		/* Use QSocketNotifier to integrate with Qt event loop. */
 		int fd = ConnectionNumber(xiDisplay);
 		xiNotifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
 		connect(xiNotifier, &QSocketNotifier::activated, this, &ZoominatorController::processXInput2Events);

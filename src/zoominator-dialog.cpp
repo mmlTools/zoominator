@@ -6,14 +6,13 @@
 #include <obs.h>
 
 #include <QCheckBox>
-#include <QColor>
-#include <QColorDialog>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QGridLayout>
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QMetaObject>
@@ -21,6 +20,10 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <QString>
+#include <QGuiApplication>
+#include <QScreen>
+#include <QColorDialog>
+#include <QColor>
 
 namespace {
 static void frontend_event_cb(enum obs_frontend_event event, void *data)
@@ -32,18 +35,33 @@ static void frontend_event_cb(enum obs_frontend_event event, void *data)
 	QMetaObject::invokeMethod(dlg, "refreshLists", Qt::QueuedConnection);
 }
 
-static bool is_capture_source_id(const char *id)
+static QKeySequence sequence_without_modifiers(const QKeySequence &seq)
 {
-	if (!id)
-		return false;
-	return strcmp(id, "monitor_capture") == 0 || strcmp(id, "window_capture") == 0 ||
-	       strcmp(id, "game_capture") == 0 || strcmp(id, "screen_capture") == 0 ||
-	       strcmp(id, "display_capture") == 0 || strcmp(id, "macos_screen_capture") == 0 ||
-	       strcmp(id, "xshm_input") == 0 || strcmp(id, "xcomposite_input") == 0 ||
-	       strcmp(id, "pipewire-screen-capture-source") == 0 ||
-	       strcmp(id, "pipewire-window-capture-source") == 0;
+	if (seq.isEmpty())
+		return {};
+	const QKeyCombination kc = seq[0];
+	if (kc.key() == Qt::Key_unknown)
+		return {};
+	return QKeySequence(QKeyCombination(Qt::NoModifier, kc.key()));
 }
+
 } // namespace
+
+static bool key_sequence_is_modifier_only(const QKeySequence &seq)
+{
+	if (seq.isEmpty())
+		return false;
+	const QKeyCombination kc = seq[0];
+	switch (kc.key()) {
+	case Qt::Key_Control:
+	case Qt::Key_Shift:
+	case Qt::Key_Alt:
+	case Qt::Key_Meta:
+		return true;
+	default:
+		return false;
+	}
+}
 
 ZoominatorDialog::ZoominatorDialog(QWidget *parent) : QDialog(parent)
 {
@@ -86,7 +104,7 @@ void ZoominatorDialog::buildUi()
 	cmbMode->addItem("Hold (press=zoom, release=restore)", "hold");
 	cmbMode->addItem("Toggle (press=zoom, press again=restore)", "toggle");
 
-	rowTarget->addWidget(new QLabel("Capture Source", topBox));
+	rowTarget->addWidget(new QLabel("Target Screen", topBox));
 	rowTarget->addWidget(cmbSource, 1);
 	rowTarget->addSpacing(6);
 	rowTarget->addWidget(new QLabel("Behavior", topBox));
@@ -121,7 +139,7 @@ void ZoominatorDialog::buildUi()
 	rowHot->addWidget(btnClearHotkey, 0);
 	trigLay->addWidget(rowHotkeyWidget);
 
-	auto *rowFollowToggleWidget = new QWidget(trigBox);
+	rowFollowToggleWidget = new QWidget(topBox);
 	auto *rowFollowToggle = new QHBoxLayout(rowFollowToggleWidget);
 	rowFollowToggle->setContentsMargins(0, 0, 0, 0);
 	rowFollowToggle->setSpacing(8);
@@ -131,7 +149,7 @@ void ZoominatorDialog::buildUi()
 	rowFollowToggle->addWidget(new QLabel("Follow Toggle Hotkey:", rowFollowToggleWidget));
 	rowFollowToggle->addWidget(editFollowToggleHotkey, 1);
 	rowFollowToggle->addWidget(btnClearFollowToggleHotkey, 0);
-	trigLay->addWidget(rowFollowToggleWidget);
+	topLay->addWidget(rowFollowToggleWidget);
 
 	rowMouseWidget = new QWidget(trigBox);
 	auto *rowMouse = new QHBoxLayout(rowMouseWidget);
@@ -148,19 +166,39 @@ void ZoominatorDialog::buildUi()
 	trigLay->addWidget(rowMouseWidget);
 
 	rowModifiersWidget = new QWidget(trigBox);
-	auto *rowMods = new QHBoxLayout(rowModifiersWidget);
+	auto *rowMods = new QGridLayout(rowModifiersWidget);
 	rowMods->setContentsMargins(0, 0, 0, 0);
-	rowMods->setSpacing(8);
-	chkCtrl = new QCheckBox("Ctrl", rowModifiersWidget);
-	chkAlt = new QCheckBox("Alt", rowModifiersWidget);
-	chkShift = new QCheckBox("Shift", rowModifiersWidget);
-	chkWin = new QCheckBox("Win", rowModifiersWidget);
-	rowMods->addWidget(new QLabel("Modifiers:", rowModifiersWidget));
-	rowMods->addWidget(chkCtrl);
-	rowMods->addWidget(chkAlt);
-	rowMods->addWidget(chkShift);
-	rowMods->addWidget(chkWin);
-	rowMods->addStretch(1);
+	rowMods->setHorizontalSpacing(8);
+	rowMods->setVerticalSpacing(4);
+	chkCtrl = new QCheckBox("Ctrl (Any)", rowModifiersWidget);
+	chkLeftCtrl = new QCheckBox("L Ctrl", rowModifiersWidget);
+	chkRightCtrl = new QCheckBox("R Ctrl", rowModifiersWidget);
+	chkAlt = new QCheckBox("Alt (Any)", rowModifiersWidget);
+	chkLeftAlt = new QCheckBox("L Alt", rowModifiersWidget);
+	chkRightAlt = new QCheckBox("R Alt", rowModifiersWidget);
+	chkShift = new QCheckBox("Shift (Any)", rowModifiersWidget);
+	chkLeftShift = new QCheckBox("L Shift", rowModifiersWidget);
+	chkRightShift = new QCheckBox("R Shift", rowModifiersWidget);
+	chkWin = new QCheckBox("Meta/Win (Any)", rowModifiersWidget);
+	chkLeftWin = new QCheckBox("L Meta/Win", rowModifiersWidget);
+	chkRightWin = new QCheckBox("R Meta/Win", rowModifiersWidget);
+	rowMods->addWidget(new QLabel("Modifiers:", rowModifiersWidget), 0, 0);
+	rowMods->addWidget(chkCtrl, 0, 1);
+	rowMods->addWidget(chkLeftCtrl, 0, 2);
+	rowMods->addWidget(chkRightCtrl, 0, 3);
+	rowMods->addWidget(chkAlt, 1, 1);
+	rowMods->addWidget(chkLeftAlt, 1, 2);
+	rowMods->addWidget(chkRightAlt, 1, 3);
+	rowMods->addWidget(chkShift, 2, 1);
+	rowMods->addWidget(chkLeftShift, 2, 2);
+	rowMods->addWidget(chkRightShift, 2, 3);
+	rowMods->addWidget(chkWin, 3, 1);
+	rowMods->addWidget(chkLeftWin, 3, 2);
+	rowMods->addWidget(chkRightWin, 3, 3);
+	rowMods->addWidget(new QLabel("Use Any for legacy behavior, or choose left/right explicitly.",
+				      rowModifiersWidget),
+			   4, 1, 1, 3);
+	rowMods->setColumnStretch(4, 1);
 	trigLay->addWidget(rowModifiersWidget);
 
 	root->addWidget(trigBox);
@@ -226,45 +264,34 @@ void ZoominatorDialog::buildUi()
 
 	auto *rowMarkerFlags = new QHBoxLayout();
 	rowMarkerFlags->setSpacing(8);
-
 	chkShowCursorMarker = new QCheckBox("Show cursor halo", cfgBox);
 	chkMarkerOnlyOnClick = new QCheckBox("Show only after click", cfgBox);
 	chkMarkerOnlyOnClick->setToolTip(
-		"When enabled, the halo stays hidden until you click inside the captured source. When disabled, it follows the cursor live.");
-
+		"When enabled, the halo flashes where you click instead of following the cursor continuously.");
 	rowMarkerFlags->addWidget(chkShowCursorMarker);
 	rowMarkerFlags->addWidget(chkMarkerOnlyOnClick);
 	rowMarkerFlags->addStretch(1);
-
 	cfgLay->addLayout(rowMarkerFlags);
 
 	auto *rowHalo = new QHBoxLayout();
 	rowHalo->setSpacing(8);
-
 	spMarkerSize = new QSpinBox(cfgBox);
 	spMarkerSize->setRange(6, 256);
 	spMarkerSize->setSingleStep(2);
 	spMarkerSize->setMinimumWidth(70);
-
 	spMarkerThickness = new QSpinBox(cfgBox);
 	spMarkerThickness->setRange(1, 64);
 	spMarkerThickness->setSingleStep(1);
 	spMarkerThickness->setMinimumWidth(70);
-
 	btnMarkerColor = new QPushButton("Pick Color", cfgBox);
 	btnMarkerColor->setMinimumHeight(26);
 	btnMarkerColor->setMinimumWidth(120);
-
 	rowHalo->addWidget(new QLabel("Halo Size", cfgBox));
 	rowHalo->addWidget(spMarkerSize);
-	rowHalo->addSpacing(8);
 	rowHalo->addWidget(new QLabel("Thickness", cfgBox));
 	rowHalo->addWidget(spMarkerThickness);
-	rowHalo->addSpacing(8);
-	rowHalo->addWidget(new QLabel("Color", cfgBox));
 	rowHalo->addWidget(btnMarkerColor);
 	rowHalo->addStretch(1);
-
 	cfgLay->addLayout(rowHalo);
 
 	chkDebug = new QCheckBox("Debug Logging", cfgBox);
@@ -274,7 +301,7 @@ void ZoominatorDialog::buildUi()
 
 	lblStatus = new QLabel(this);
 	lblStatus->setWordWrap(true);
-	lblStatus->setText(QStringLiteral("Tip: Use the Dock for fast switching between sources."));
+	lblStatus->setText(QStringLiteral("Tip: Select the monitor that should drive the scene movement."));
 	root->addWidget(lblStatus);
 
 	auto *btnRow = new QHBoxLayout();
@@ -308,6 +335,8 @@ void ZoominatorDialog::buildUi()
 			rowHotkeyWidget->setVisible(!isMouse);
 		if (rowModifiersWidget)
 			rowModifiersWidget->setVisible(isMouse);
+		if (rowFollowToggleWidget)
+			rowFollowToggleWidget->setVisible(true);
 	});
 }
 
@@ -317,32 +346,27 @@ void ZoominatorDialog::populateSources()
 
 	cmbSource->blockSignals(true);
 	cmbSource->clear();
-	cmbSource->addItem("(Select Source)", "");
+	cmbSource->addItem("(Select Screen)", "");
 
-	struct Ctx {
-		QComboBox *cmb;
-	};
-	Ctx ctx{cmbSource};
-
-	auto enum_cb = [](void *p, obs_source_t *src) -> bool {
-		auto *c = static_cast<Ctx *>(p);
-		if (!c || !src)
-			return true;
-		const char *id = obs_source_get_id(src);
-		if (!is_capture_source_id(id))
-			return true;
-		const char *nm = obs_source_get_name(src);
-		if (!nm || !*nm)
-			return true;
-		c->cmb->addItem(QString::fromUtf8(nm), QString::fromUtf8(nm));
-		return true;
-	};
-
-	obs_enum_sources(enum_cb, &ctx);
+	const auto screens = QGuiApplication::screens();
+	for (int i = 0; i < screens.size(); ++i) {
+		auto *screen = screens[i];
+		if (!screen)
+			continue;
+		const QRect g = screen->geometry();
+		const QString key = QStringLiteral("%1,%2,%3,%4").arg(g.x()).arg(g.y()).arg(g.width()).arg(g.height());
+		QString label = QStringLiteral("%1: %2x%3 @ (%4, %5)")
+					.arg(screen->name())
+					.arg(g.width())
+					.arg(g.height())
+					.arg(g.x())
+					.arg(g.y());
+		cmbSource->addItem(label, key);
+	}
 
 	int idx = cmbSource->findData(cur);
 	if (idx < 0)
-		idx = cmbSource->findData(ZoominatorController::instance().sourceName);
+		idx = cmbSource->findData(ZoominatorController::instance().screenKey);
 	if (idx >= 0)
 		cmbSource->setCurrentIndex(idx);
 
@@ -361,7 +385,7 @@ void ZoominatorDialog::loadFromController()
 
 	refreshLists();
 
-	int sidx = cmbSource->findData(c.sourceName);
+	int sidx = cmbSource->findData(c.screenKey);
 	if (sidx >= 0)
 		cmbSource->setCurrentIndex(sidx);
 
@@ -381,6 +405,14 @@ void ZoominatorDialog::loadFromController()
 	chkAlt->setChecked(c.modAlt);
 	chkShift->setChecked(c.modShift);
 	chkWin->setChecked(c.modWin);
+	chkLeftCtrl->setChecked(c.modLeftCtrl);
+	chkRightCtrl->setChecked(c.modRightCtrl);
+	chkLeftAlt->setChecked(c.modLeftAlt);
+	chkRightAlt->setChecked(c.modRightAlt);
+	chkLeftShift->setChecked(c.modLeftShift);
+	chkRightShift->setChecked(c.modRightShift);
+	chkLeftWin->setChecked(c.modLeftWin);
+	chkRightWin->setChecked(c.modRightWin);
 
 	editHotkey->setKeySequence(QKeySequence(c.hotkeySequence));
 	editFollowToggleHotkey->setKeySequence(QKeySequence(c.followToggleHotkeySequence));
@@ -407,6 +439,8 @@ void ZoominatorDialog::loadFromController()
 		rowHotkeyWidget->setVisible(!isMouse);
 	if (rowModifiersWidget)
 		rowModifiersWidget->setVisible(isMouse);
+	if (rowFollowToggleWidget)
+		rowFollowToggleWidget->setVisible(true);
 
 	loading = false;
 }
@@ -417,7 +451,7 @@ void ZoominatorDialog::applyToController()
 		return;
 
 	auto &c = ZoominatorController::instance();
-	c.sourceName = cmbSource->currentData().toString();
+	c.screenKey = cmbSource->currentData().toString();
 	c.hotkeyMode = cmbMode->currentData().toString();
 
 	c.triggerType = cmbTrigger->currentData().toString();
@@ -426,8 +460,22 @@ void ZoominatorDialog::applyToController()
 	c.modAlt = chkAlt->isChecked();
 	c.modShift = chkShift->isChecked();
 	c.modWin = chkWin->isChecked();
+	c.modLeftCtrl = chkLeftCtrl->isChecked();
+	c.modRightCtrl = chkRightCtrl->isChecked();
+	c.modLeftAlt = chkLeftAlt->isChecked();
+	c.modRightAlt = chkRightAlt->isChecked();
+	c.modLeftShift = chkLeftShift->isChecked();
+	c.modRightShift = chkRightShift->isChecked();
+	c.modLeftWin = chkLeftWin->isChecked();
+	c.modRightWin = chkRightWin->isChecked();
 
-	c.hotkeySequence = editHotkey->keySequence().toString(QKeySequence::NativeText);
+	QKeySequence triggerSequence = editHotkey->keySequence();
+	if (!key_sequence_is_modifier_only(triggerSequence) &&
+	    (c.modCtrl || c.modAlt || c.modShift || c.modWin || c.modLeftCtrl || c.modRightCtrl || c.modLeftAlt ||
+	     c.modRightAlt || c.modLeftShift || c.modRightShift || c.modLeftWin || c.modRightWin)) {
+		triggerSequence = sequence_without_modifiers(triggerSequence);
+	}
+	c.hotkeySequence = triggerSequence.toString(QKeySequence::NativeText);
 	c.followToggleHotkeySequence =
 		editFollowToggleHotkey->keySequence().toString(QKeySequence::NativeText);
 
@@ -446,7 +494,8 @@ void ZoominatorDialog::applyToController()
 	c.debug = chkDebug->isChecked();
 
 	c.saveSettings();
-	lblStatus->setText(QStringLiteral("Applied. The halo now uses only size, thickness, and color."));
+	lblStatus->setText(QStringLiteral(
+		"Applied. Zoom now uses the selected screen, moves the whole scene, and can show the cursor halo again."));
 }
 
 void ZoominatorDialog::testZoom()
@@ -469,22 +518,21 @@ void ZoominatorDialog::updateMarkerColorButton(const QColor &color)
 {
 	if (!btnMarkerColor)
 		return;
-
-	const QColor c = color.isValid() ? color : QColor::fromRgb(255, 0, 0);
+	const QColor c = color.isValid() ? color : QColor(255, 0, 0);
 	btnMarkerColor->setProperty("markerRgba", c.rgba());
 	btnMarkerColor->setText(QStringLiteral("%1 / %2 / %3").arg(c.red()).arg(c.green()).arg(c.blue()));
 	btnMarkerColor->setStyleSheet(
-		QStringLiteral("text-align:left; padding: 6px 10px; background:%1; color:%2;")
+		QStringLiteral(
+			"QPushButton { background:%1; color:%2; border:1px solid palette(mid); padding:4px 8px; }")
 			.arg(c.name(QColor::HexArgb))
-			.arg(c.lightness() < 128 ? QStringLiteral("#ffffff") : QStringLiteral("#000000")));
+			.arg((c.lightness() < 128) ? QStringLiteral("#ffffff") : QStringLiteral("#000000")));
 }
 
 void ZoominatorDialog::chooseMarkerColor()
 {
 	const uint rgba = btnMarkerColor ? btnMarkerColor->property("markerRgba").toUInt() : QColor(255, 0, 0).rgba();
-	const QColor current = QColor::fromRgba(rgba);
-	const QColor picked = QColorDialog::getColor(current, this, QStringLiteral("Select marker color"),
-						     QColorDialog::ShowAlphaChannel);
+	const QColor picked = QColorDialog::getColor(
+		QColor::fromRgba(rgba), this, QStringLiteral("Pick Cursor Halo Color"), QColorDialog::ShowAlphaChannel);
 	if (!picked.isValid())
 		return;
 

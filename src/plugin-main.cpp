@@ -22,10 +22,6 @@ static void open_dialog_cb(void *)
 	ZoominatorController::instance().showDialog();
 }
 
-static void show_dock_cb(void *)
-{
-	ZoominatorController::instance().toggleDockVisibility(true);
-}
 
 bool obs_module_load(void)
 {

@@ -8,6 +8,7 @@
 #include <QSocketNotifier>
 #include <QTimer>
 #include <QString>
+#include <vector>
 
 #ifdef _WIN32
 #	define WIN32_LEAN_AND_MEAN
@@ -17,14 +18,11 @@
 #	include <CoreFoundation/CoreFoundation.h>
 #	include <CoreGraphics/CoreGraphics.h>
 #elif defined(__linux__)
-/* X11 headers define macros (Bool, None, Status, CursorShape) that conflict
-   with Qt identifiers, so we only forward-declare Display here and include
-   the real X11 headers in the .cpp file after all Qt headers. */
+
 struct _XDisplay;
 #endif
 
 class ZoominatorDialog;
-class ZoominatorDock;
 
 class ZoominatorController final : public QObject {
 	Q_OBJECT
@@ -35,12 +33,11 @@ public:
 	void initialize();
 	void shutdown();
 	void showDialog();
-	void toggleDockVisibility(bool show);
 	void saveSettings();
 	void loadSettings();
 	void notifySettingsChanged();
 
-	QString sourceName;
+	QString screenKey;
 	QString hotkeySequence;
 	QString hotkeyMode;
 	QString followToggleHotkeySequence;
@@ -51,6 +48,14 @@ public:
 	bool modAlt = false;
 	bool modShift = false;
 	bool modWin = false;
+	bool modLeftCtrl = false;
+	bool modRightCtrl = false;
+	bool modLeftAlt = false;
+	bool modRightAlt = false;
+	bool modLeftShift = false;
+	bool modRightShift = false;
+	bool modLeftWin = false;
+	bool modRightWin = false;
 
 	double zoomFactor = 2.0;
 	int animInMs = 180;
@@ -68,7 +73,6 @@ public:
 
 signals:
 	void settingsChanged();
-	void dockVisibilityChanged(bool visible);
 
 private slots:
 	void onTick();
@@ -95,24 +99,29 @@ private:
 	bool triggerMatchesMouse(unsigned int msg, unsigned short mouseData) const;
 	bool modsMatch() const;
 
-	obs_sceneitem_t *findTargetItemInCurrentScene() const;
+	bool getSelectedScreenRect(int &x, int &y, int &w, int &h) const;
+	void enumerateTargetItemsInCurrentScene(std::vector<obs_sceneitem_t *> &items) const;
 
 	bool getCursorPos(int &x, int &y) const;
-	bool mapCursorToSourcePixels(obs_source_t *src, int cursorX, int cursorY, float &sx, float &sy, bool &cursorInside) const;
+	bool mapCursorToScenePixels(int cursorX, int cursorY, float &sx, float &sy, bool &cursorInside) const;
 
 	void captureOriginal(obs_sceneitem_t *item);
 	void restoreOriginal(obs_sceneitem_t *item);
+	void captureOriginalSceneItems(const std::vector<obs_sceneitem_t *> &items);
+	void restoreOriginalSceneItems(const std::vector<obs_sceneitem_t *> &items);
 	QString markerImagePath() const;
 	void ensureMarkerSource();
 	obs_sceneitem_t *ensureMarkerItem(obs_scene_t *scene);
 	void hideMarkerInScene(obs_scene_t *scene);
-	void rebuildMarkerImage(int opacity255 = 255);
-	void updateMarkerAppearance(int opacity255 = 255);
-	void updateMarkerPosition(obs_scene_t *scene, double x, double y, int opacity255 = 255);
+	void rebuildMarkerImage();
+	void ensureMarkerFilter();
+	void applyMarkerOpacity(int opacity255);
+	void updateMarkerAppearance();
+	void updateMarkerPosition(obs_scene_t *scene, double x, double y, int opacity255);
 	bool captureMarkerClickPosition();
 	bool isMarkerFlashActive(qint64 nowMs) const;
 	int currentMarkerOpacity(qint64 nowMs);
-	void applyZoom(obs_sceneitem_t *item, obs_source_t *src, double t);
+	void applyZoomToScene(const std::vector<obs_sceneitem_t *> &items, double t);
 
 	QTimer tickTimer;
 	bool zoomPressed = false;
@@ -126,11 +135,16 @@ private:
 	float followX = 0.0f;
 	float followY = 0.0f;
 
+	bool targetHasPos = false;
+	float targetX = 0.0f;
+	float targetY = 0.0f;
+
 	bool markerClickHasPos = false;
 	float markerClickX = 0.0f;
 	float markerClickY = 0.0f;
 	uint32_t markerAppearanceHash = 0;
-	int markerRenderedOpacity = -1;
+	int markerCurrentOpacity = -1;
+	obs_source_t *markerFilter = nullptr;
 	qint64 markerClickFlashStartMs = 0;
 	qint64 markerClickFlashHoldUntilMs = 0;
 	qint64 markerClickFlashFadeOutEndMs = 0;
@@ -145,10 +159,21 @@ private:
 		uint32_t boundsAlign = 0;
 		vec2 bounds{};
 		obs_sceneitem_crop crop{};
-	} orig;
+		vec2 effectivePos{};
+		vec2 effectiveScale{};
+	};
+
+	struct SceneItemState {
+		obs_sceneitem_t *item = nullptr;
+		OrigState orig;
+	};
+
+	std::vector<SceneItemState> sceneItems;
+	bool sceneContentBoundsValid = false;
+	vec2 sceneContentMin{};
+	vec2 sceneContentMax{};
 
 	QPointer<ZoominatorDialog> dialog;
-	QPointer<ZoominatorDock> dock;
 	obs_source_t *markerSource = nullptr;
 
 	int hotkeyVk = 0;

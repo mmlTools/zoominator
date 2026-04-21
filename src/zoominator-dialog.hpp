@@ -9,7 +9,6 @@ class QKeySequenceEdit;
 class QLabel;
 class QPushButton;
 class QSpinBox;
-class QColor;
 
 class ZoominatorDialog final : public QDialog {
 	Q_OBJECT
@@ -43,6 +42,14 @@ private:
 	QCheckBox *chkAlt = nullptr;
 	QCheckBox *chkShift = nullptr;
 	QCheckBox *chkWin = nullptr;
+	QCheckBox *chkLeftCtrl = nullptr;
+	QCheckBox *chkRightCtrl = nullptr;
+	QCheckBox *chkLeftAlt = nullptr;
+	QCheckBox *chkRightAlt = nullptr;
+	QCheckBox *chkLeftShift = nullptr;
+	QCheckBox *chkRightShift = nullptr;
+	QCheckBox *chkLeftWin = nullptr;
+	QCheckBox *chkRightWin = nullptr;
 
 	QKeySequenceEdit *editHotkey = nullptr;
 	QPushButton *btnClearHotkey = nullptr;
@@ -68,6 +75,7 @@ private:
 	QPushButton *btnTest = nullptr;
 
 	QWidget *rowHotkeyWidget = nullptr;
+	QWidget *rowFollowToggleWidget = nullptr;
 	QWidget *rowMouseWidget = nullptr;
 	QWidget *rowModifiersWidget = nullptr;
 

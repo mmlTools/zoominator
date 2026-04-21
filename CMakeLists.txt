@@ -59,8 +59,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
   src/zoominator-controller.hpp
   src/zoominator-dialog.cpp
   src/zoominator-dialog.hpp
-  src/zoominator-dock.cpp
-  src/zoominator-dock.hpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
