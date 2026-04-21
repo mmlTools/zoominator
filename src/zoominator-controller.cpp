@@ -2131,6 +2131,14 @@ static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantW
 	return true;
 }
 
+#ifndef _WIN32
+static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantWin)
+{
+	return mods_current(wantCtrl, wantAlt, wantShift, wantWin, false, false, false, false, false,
+			    false, false, false);
+}
+#endif
+
 #ifdef _WIN32
 static inline bool is_modifier_vk(int vk)
 {
