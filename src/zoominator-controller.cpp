@@ -34,6 +34,35 @@
 #include "zoominator-dialog.hpp"
 #include "zoominator-dock.hpp"
 
+/* X11 headers must be included AFTER all Qt headers because Xlib.h defines
+   macros (Bool, None, Status, CursorShape, etc.) that clash with Qt
+   identifiers. We undefine the worst offenders immediately after. */
+#ifdef __linux__
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/keysymdef.h>
+#include <X11/XKBlib.h>
+#include <X11/extensions/XInput2.h>
+#include <X11/extensions/Xrandr.h>
+#include <X11/Xatom.h>
+
+/* Undefine X11 macros that collide with Qt identifiers. */
+#undef Bool
+#undef None
+#undef Status
+#undef CursorShape
+#undef KeyPress
+#undef KeyRelease
+#undef FocusIn
+#undef FocusOut
+#undef Above
+#undef Below
+#undef Unsorted
+
+/* Re-provide constants we need under safe names. */
+static constexpr long X11_None = 0L;
+#endif
+
 static int qtKeyToVk(int qtKey);
 
 static constexpr const char *kZoominatorMarkerSourceName = "Zoominator Cursor Marker";
@@ -123,15 +152,23 @@ void ZoominatorController::initialize()
 	if (!dock) {
 		dock = new ZoominatorDock(reinterpret_cast<QWidget *>(obs_frontend_get_main_window()));
 
+#if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(30, 0, 0)
 		const char *dock_id = "zoominator.dock";
 		obs_frontend_add_dock_by_id(dock_id, "Zoominator", dock);
+#else
+		dock->setWindowTitle("Zoominator");
+		dock->setObjectName("zoominator.dock");
+		obs_frontend_add_dock(dock);
+#endif
 	}
 }
 
 void ZoominatorController::shutdown()
 {
 	saveSettings();
+#if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(30, 0, 0)
 	obs_frontend_remove_dock("zoominator.dock");
+#endif
 	uninstallHooks();
 	ensureTicking(false);
 	resetState();
@@ -237,6 +274,12 @@ void ZoominatorController::loadSettings()
 			 followToggleHotkeyVk == kVK_Option || followToggleHotkeyVk == kVK_RightOption ||
 			 followToggleHotkeyVk == kVK_Shift || followToggleHotkeyVk == kVK_RightShift ||
 			 followToggleHotkeyVk == kVK_Command || followToggleHotkeyVk == kVK_RightCommand);
+#elif defined(__linux__)
+		const bool keyIsModifier =
+			(followToggleHotkeyVk == XK_Control_L || followToggleHotkeyVk == XK_Control_R ||
+			 followToggleHotkeyVk == XK_Alt_L || followToggleHotkeyVk == XK_Alt_R ||
+			 followToggleHotkeyVk == XK_Shift_L || followToggleHotkeyVk == XK_Shift_R ||
+			 followToggleHotkeyVk == XK_Super_L || followToggleHotkeyVk == XK_Super_R);
 #else
 		const bool keyIsModifier = false;
 #endif
@@ -260,6 +303,15 @@ void ZoominatorController::loadSettings()
 				(followToggleHotkeyVk == kVK_Shift || followToggleHotkeyVk == kVK_RightShift);
 			followToggleModWin =
 				(followToggleHotkeyVk == kVK_Command || followToggleHotkeyVk == kVK_RightCommand);
+#elif defined(__linux__)
+			followToggleModCtrl =
+				(followToggleHotkeyVk == XK_Control_L || followToggleHotkeyVk == XK_Control_R);
+			followToggleModAlt =
+				(followToggleHotkeyVk == XK_Alt_L || followToggleHotkeyVk == XK_Alt_R);
+			followToggleModShift =
+				(followToggleHotkeyVk == XK_Shift_L || followToggleHotkeyVk == XK_Shift_R);
+			followToggleModWin =
+				(followToggleHotkeyVk == XK_Super_L || followToggleHotkeyVk == XK_Super_R);
 #else
 			followToggleHotkeyVk = 0;
 #endif
@@ -494,6 +546,22 @@ bool ZoominatorController::getCursorPos(int &x, int &y) const
 	CFRelease(event);
 	x = (int)loc.x;
 	y = (int)loc.y;
+	return true;
+#elif defined(__linux__)
+	Display *dpy = XOpenDisplay(nullptr);
+	if (!dpy)
+		return false;
+	Window root = DefaultRootWindow(dpy);
+	Window retRoot = 0, retChild = 0;
+	int rootX = 0, rootY = 0, winX = 0, winY = 0;
+	unsigned int mask = 0;
+	int ok = XQueryPointer(dpy, root, &retRoot, &retChild, &rootX, &rootY, &winX, &winY, &mask);
+	XCloseDisplay(dpy);
+	(void)retRoot; (void)retChild; (void)winX; (void)winY; (void)mask;
+	if (!ok)
+		return false;
+	x = rootX;
+	y = rootY;
 	return true;
 #else
 	(void)x;
@@ -1003,6 +1071,261 @@ static bool match_window_rect_for_source(obs_source_t *src, CGRect &rcOut)
 }
 #endif // __APPLE__
 
+#ifdef __linux__
+struct MonitorInfoLite {
+	QString name;
+	int x, y, w, h;
+};
+
+static std::vector<MonitorInfoLite> enum_monitors()
+{
+	std::vector<MonitorInfoLite> out;
+	Display *dpy = XOpenDisplay(nullptr);
+	if (!dpy)
+		return out;
+
+	int screen = DefaultScreen(dpy);
+	Window root = RootWindow(dpy, screen);
+	XRRScreenResources *res = XRRGetScreenResources(dpy, root);
+	if (!res) {
+		XCloseDisplay(dpy);
+		return out;
+	}
+
+	for (int i = 0; i < res->noutput; i++) {
+		XRROutputInfo *oi = XRRGetOutputInfo(dpy, res, res->outputs[i]);
+		if (!oi)
+			continue;
+		if (oi->connection != RR_Connected || oi->crtc == X11_None) {
+			XRRFreeOutputInfo(oi);
+			continue;
+		}
+		XRRCrtcInfo *ci = XRRGetCrtcInfo(dpy, res, oi->crtc);
+		if (!ci) {
+			XRRFreeOutputInfo(oi);
+			continue;
+		}
+		MonitorInfoLite m;
+		m.name = QString::fromLatin1(oi->name);
+		m.x = (int)ci->x;
+		m.y = (int)ci->y;
+		m.w = (int)ci->width;
+		m.h = (int)ci->height;
+		out.push_back(m);
+		XRRFreeCrtcInfo(ci);
+		XRRFreeOutputInfo(oi);
+	}
+
+	XRRFreeScreenResources(res);
+	XCloseDisplay(dpy);
+	return out;
+}
+
+struct LinuxRect {
+	int x, y, w, h;
+};
+
+static bool match_monitor_rect(obs_source_t *src, LinuxRect &rcOut)
+{
+	auto mons = enum_monitors();
+	if (mons.empty())
+		return false;
+
+	QString selector;
+	int monId = -1;
+	bool hasId = false;
+	get_monitor_capture_selector(src, selector, monId, hasId);
+
+	/* OBS on Linux (PipeWire/X11) often stores monitor index as an integer. */
+	if (!selector.isEmpty()) {
+		for (auto &m : mons) {
+			if (m.name == selector) {
+				rcOut = {m.x, m.y, m.w, m.h};
+				return true;
+			}
+		}
+		/* Try matching "DISPLAY<N>" pattern, or just the trailing number. */
+		QRegularExpression re("(\\d+)$");
+		auto mw = re.match(selector);
+		if (mw.hasMatch()) {
+			int idx = mw.captured(1).toInt();
+			if (idx >= 0 && idx < (int)mons.size()) {
+				auto &m = mons[(size_t)idx];
+				rcOut = {m.x, m.y, m.w, m.h};
+				return true;
+			}
+		}
+	}
+
+	if (hasId) {
+		if (monId >= 0 && monId < (int)mons.size()) {
+			auto &m = mons[(size_t)monId];
+			rcOut = {m.x, m.y, m.w, m.h};
+			return true;
+		}
+		if (monId >= 1 && monId <= (int)mons.size()) {
+			auto &m = mons[(size_t)(monId - 1)];
+			rcOut = {m.x, m.y, m.w, m.h};
+			return true;
+		}
+	}
+
+	/* Fallback: if only one monitor, use it. */
+	if (mons.size() == 1) {
+		auto &m = mons[0];
+		rcOut = {m.x, m.y, m.w, m.h};
+		return true;
+	}
+
+	return false;
+}
+
+static bool parse_obs_window_selector_linux(const QString &sel, QString &title, QString &clazz, QString &exe)
+{
+	title.clear();
+	clazz.clear();
+	exe.clear();
+	if (sel.isEmpty())
+		return false;
+
+	/* OBS Linux window capture uses "title:class:exe" format. */
+	QString s = sel;
+	int last = s.lastIndexOf(':');
+	if (last <= 0) {
+		title = s;
+		return true;
+	}
+	exe = s.mid(last + 1);
+	s = s.left(last);
+
+	int mid = s.lastIndexOf(':');
+	if (mid <= 0) {
+		title = s;
+		return true;
+	}
+	clazz = s.mid(mid + 1);
+	title = s.left(mid);
+	return true;
+}
+
+static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
+{
+	obs_data_t *s = obs_source_get_settings(src);
+	if (!s)
+		return false;
+
+	/* OBS xcomposite/xshm window capture stores "window" or "capture_window" as XID or selector. */
+	const char *w = obs_data_get_string(s, "window");
+	QString sel = (w && *w) ? QString::fromUtf8(w) : QString();
+	if (sel.isEmpty()) {
+		w = obs_data_get_string(s, "capture_window");
+		sel = (w && *w) ? QString::fromUtf8(w) : QString();
+	}
+
+	/* Also try the window name property. */
+	const char *windowName = obs_data_get_string(s, "window_name");
+	QString wantName = (windowName && *windowName) ? QString::fromUtf8(windowName) : QString();
+
+	int64_t windowId = obs_data_get_int(s, "window");
+	obs_data_release(s);
+
+	Display *dpy = XOpenDisplay(nullptr);
+	if (!dpy)
+		return false;
+
+	/* If we have a numeric window ID, use it directly. */
+	if (windowId > 0) {
+		XWindowAttributes attr;
+		if (XGetWindowAttributes(dpy, (Window)windowId, &attr)) {
+			int absX = 0, absY = 0;
+			Window child;
+			XTranslateCoordinates(dpy, (Window)windowId, DefaultRootWindow(dpy), 0, 0, &absX, &absY,
+					      &child);
+			XCloseDisplay(dpy);
+			rcOut = {absX, absY, attr.width, attr.height};
+			return true;
+		}
+	}
+
+	/* Parse the selector string for title/class matching. */
+	QString title, clazz, exe;
+	if (!sel.isEmpty())
+		parse_obs_window_selector_linux(sel, title, clazz, exe);
+	if (title.isEmpty() && !wantName.isEmpty())
+		title = wantName;
+
+	if (title.isEmpty() && clazz.isEmpty()) {
+		XCloseDisplay(dpy);
+		return false;
+	}
+
+	/* Enumerate top-level windows. */
+	Window root = DefaultRootWindow(dpy);
+	Atom netClientList = XInternAtom(dpy, "_NET_CLIENT_LIST", True);
+	bool found = false;
+
+	if (netClientList != X11_None) {
+		Atom type;
+		int format;
+		unsigned long nitems, bytesAfter;
+		unsigned char *data = nullptr;
+		if (XGetWindowProperty(dpy, root, netClientList, 0, ~0L, False, XA_WINDOW, &type, &format, &nitems,
+				       &bytesAfter, &data) == Success &&
+		    data) {
+			Window *windows = (Window *)data;
+			for (unsigned long i = 0; i < nitems && !found; i++) {
+				Window win = windows[i];
+
+				/* Check class. */
+				if (!clazz.isEmpty()) {
+					XClassHint ch{};
+					if (XGetClassHint(dpy, win, &ch)) {
+						QString resName = ch.res_name ? QString::fromUtf8(ch.res_name) : QString();
+						QString resClass = ch.res_class ? QString::fromUtf8(ch.res_class) : QString();
+						if (ch.res_name)
+							XFree(ch.res_name);
+						if (ch.res_class)
+							XFree(ch.res_class);
+						if (resName.compare(clazz, Qt::CaseInsensitive) != 0 &&
+						    resClass.compare(clazz, Qt::CaseInsensitive) != 0)
+							continue;
+					} else {
+						continue;
+					}
+				}
+
+				/* Check title. */
+				if (!title.isEmpty()) {
+					char *name = nullptr;
+					if (XFetchName(dpy, win, &name) && name) {
+						QString winTitle = QString::fromUtf8(name);
+						XFree(name);
+						if (!winTitle.contains(title, Qt::CaseInsensitive))
+							continue;
+					} else {
+						continue;
+					}
+				}
+
+				/* Found a match -- get geometry. */
+				XWindowAttributes attr;
+				if (XGetWindowAttributes(dpy, win, &attr)) {
+					int absX = 0, absY = 0;
+					Window child;
+					XTranslateCoordinates(dpy, win, root, 0, 0, &absX, &absY, &child);
+					rcOut = {absX, absY, attr.width, attr.height};
+					found = true;
+				}
+			}
+			XFree(data);
+		}
+	}
+
+	XCloseDisplay(dpy);
+	return found;
+}
+#endif // __linux__
+
 bool ZoominatorController::mapCursorToSourcePixels(obs_source_t *src, int cursorX, int cursorY, float &sx, float &sy,
 						   bool &cursorInside) const
 {
@@ -1132,6 +1455,57 @@ return true;
 
 	const double relX = (clampedX - rcX) / (double)w;
 	const double relY = (clampedY - rcY) / (double)h;
+
+	const uint32_t sw = obs_source_get_width(src);
+	const uint32_t sh = obs_source_get_height(src);
+	if (sw == 0 || sh == 0)
+		return false;
+
+	sx = (float)(relX * (double)sw);
+	sy = (float)(relY * (double)sh);
+	return true;
+#elif defined(__linux__)
+	LinuxRect rc{};
+	bool haveRect = false;
+	const bool isMonitorCap = (strcmp(id, "monitor_capture") == 0 || strcmp(id, "display_capture") == 0 ||
+				   strcmp(id, "screen_capture") == 0 || strcmp(id, "xshm_input") == 0 ||
+				   (strstr(id, "monitor") && strstr(id, "capture")));
+
+	if (isMonitorCap) {
+		haveRect = match_monitor_rect(src, rc);
+	} else if (strcmp(id, "window_capture") == 0 || strcmp(id, "xcomposite_input") == 0 ||
+		   strcmp(id, "pipewire-screen-capture-source") == 0 || strcmp(id, "pipewire-window-capture-source") == 0) {
+		haveRect = match_window_rect_for_source(src, rc);
+	}
+
+	if (!haveRect) {
+		if (isMonitorCap)
+			return false;
+		/* Fallback: use entire virtual screen from XRandR. */
+		Display *dpy = XOpenDisplay(nullptr);
+		if (dpy) {
+			int screen = DefaultScreen(dpy);
+			rc.x = 0;
+			rc.y = 0;
+			rc.w = DisplayWidth(dpy, screen);
+			rc.h = DisplayHeight(dpy, screen);
+			XCloseDisplay(dpy);
+			haveRect = (rc.w > 0 && rc.h > 0);
+		}
+		if (!haveRect)
+			return false;
+	}
+
+	if (rc.w <= 0 || rc.h <= 0)
+		return false;
+
+	cursorInside = !(cursorX < rc.x || cursorX >= rc.x + rc.w || cursorY < rc.y || cursorY >= rc.y + rc.h);
+
+	const int clampedX = std::max(rc.x, std::min(cursorX, rc.x + rc.w - 1));
+	const int clampedY = std::max(rc.y, std::min(cursorY, rc.y + rc.h - 1));
+
+	const double relX = (clampedX - rc.x) / (double)rc.w;
+	const double relY = (clampedY - rc.y) / (double)rc.h;
 
 	const uint32_t sw = obs_source_get_width(src);
 	const uint32_t sh = obs_source_get_height(src);
@@ -1655,9 +2029,7 @@ void ZoominatorController::onTick()
 	applyZoom(item, src, animT);
 }
 
-#if defined(_WIN32) || defined(__APPLE__)
 static ZoominatorController *g_ctl = nullptr;
-#endif
 
 static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantWin)
 {
@@ -1677,6 +2049,24 @@ static bool mods_current(bool wantCtrl, bool wantAlt, bool wantShift, bool wantW
 	const bool a = down(kVK_Option) || down(kVK_RightOption);
 	const bool s = down(kVK_Shift) || down(kVK_RightShift);
 	const bool w = down(kVK_Command) || down(kVK_RightCommand);
+#elif defined(__linux__)
+	bool c = false, a = false, s = false, w = false;
+	Display *dpy = XOpenDisplay(nullptr);
+	if (dpy) {
+		char keys[32];
+		XQueryKeymap(dpy, keys);
+		auto isDown = [&](KeySym sym) -> bool {
+			KeyCode kc = XKeysymToKeycode(dpy, sym);
+			if (kc == 0)
+				return false;
+			return (keys[kc / 8] & (1 << (kc % 8))) != 0;
+		};
+		c = isDown(XK_Control_L) || isDown(XK_Control_R);
+		a = isDown(XK_Alt_L) || isDown(XK_Alt_R);
+		s = isDown(XK_Shift_L) || isDown(XK_Shift_R);
+		w = isDown(XK_Super_L) || isDown(XK_Super_R);
+		XCloseDisplay(dpy);
+	}
 #else
 	const bool c = false, a = false, s = false, w = false;
 #endif
@@ -1999,6 +2389,160 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 }
 #endif // __APPLE__
 
+#ifdef __linux__
+static inline bool is_modifier_vk(int vk)
+{
+	return vk == XK_Control_L || vk == XK_Control_R || vk == XK_Alt_L || vk == XK_Alt_R || vk == XK_Shift_L ||
+	       vk == XK_Shift_R || vk == XK_Super_L || vk == XK_Super_R;
+}
+
+static inline bool is_wanted_modifier_vk(int vk, const ZoominatorController *ctl)
+{
+	if (!ctl)
+		return false;
+	if (ctl->modCtrl && (vk == XK_Control_L || vk == XK_Control_R))
+		return true;
+	if (ctl->modAlt && (vk == XK_Alt_L || vk == XK_Alt_R))
+		return true;
+	if (ctl->modShift && (vk == XK_Shift_L || vk == XK_Shift_R))
+		return true;
+	if (ctl->modWin && (vk == XK_Super_L || vk == XK_Super_R))
+		return true;
+	return false;
+}
+
+static bool vk_matches(int pressedVk, int wantVk)
+{
+	if (pressedVk == wantVk)
+		return true;
+
+	/* Match lowercase letters to their keysym too. */
+	if (wantVk >= XK_a && wantVk <= XK_z)
+		return pressedVk == (wantVk - XK_a + XK_A);
+	if (wantVk >= XK_A && wantVk <= XK_Z)
+		return pressedVk == (wantVk - XK_A + XK_a);
+
+	/* Match numpad to number row. */
+	if (wantVk >= XK_KP_0 && wantVk <= XK_KP_9)
+		return pressedVk == (XK_0 + (wantVk - XK_KP_0));
+	if (wantVk >= XK_0 && wantVk <= XK_9)
+		return pressedVk == (XK_KP_0 + (wantVk - XK_0));
+
+	return false;
+}
+
+static bool linux_button_matches(int button, const QString &want)
+{
+	if (want == "left")
+		return button == 1;
+	if (want == "middle")
+		return button == 2;
+	if (want == "right")
+		return button == 3;
+	if (want == "x1")
+		return button == 8;
+	if (want == "x2")
+		return button == 9;
+	return false;
+}
+
+void ZoominatorController::processXInput2Events()
+{
+	if (!xiDisplay)
+		return;
+
+	while (XPending(xiDisplay)) {
+		XEvent ev;
+		XNextEvent(xiDisplay, &ev);
+
+		if (ev.xcookie.type != GenericEvent || ev.xcookie.extension != xiOpcode)
+			continue;
+		if (!XGetEventData(xiDisplay, &ev.xcookie))
+			continue;
+
+		const int evtype = ev.xcookie.evtype;
+
+		if (evtype == XI_RawKeyPress || evtype == XI_RawKeyRelease) {
+			XIRawEvent *raw = (XIRawEvent *)ev.xcookie.data;
+			const int keycode = raw->detail;
+			KeySym sym = XkbKeycodeToKeysym(xiDisplay, keycode, 0, 0);
+			const bool down = (evtype == XI_RawKeyPress);
+
+			/* Follow-toggle hotkey. */
+			if (followToggleHkValid && down && followToggleHotkeyVk != 0 &&
+			    vk_matches((int)sym, followToggleHotkeyVk) &&
+			    mods_current(followToggleModCtrl, followToggleModAlt, followToggleModShift,
+					 followToggleModWin)) {
+				toggleFollowMouseRuntime();
+			}
+
+			/* Main keyboard trigger. */
+			if (hkValid && triggerType == "keyboard") {
+				if (hotkeyVk == 0) {
+					/* Modifier-only trigger. */
+					if (is_modifier_vk((int)sym) && is_wanted_modifier_vk((int)sym, this)) {
+						const bool matchNow = mods_current(modCtrl, modAlt, modShift, modWin);
+						if (hotkeyMode == "toggle") {
+							if (down && matchNow)
+								onTriggerDown();
+						} else {
+							if (down && matchNow)
+								onTriggerDown();
+							if (!down && zoomPressed && !matchNow)
+								onTriggerUp();
+						}
+					}
+				} else if (vk_matches((int)sym, hotkeyVk)) {
+					if (mods_current(modCtrl, modAlt, modShift, modWin)) {
+						if (hotkeyMode == "toggle") {
+							if (down)
+								onTriggerDown();
+						} else {
+							if (down)
+								onTriggerDown();
+							if (!down)
+								onTriggerUp();
+						}
+					}
+				}
+			}
+		} else if (evtype == XI_RawButtonPress || evtype == XI_RawButtonRelease) {
+			XIRawEvent *raw = (XIRawEvent *)ev.xcookie.data;
+			const int button = raw->detail;
+			const bool down = (evtype == XI_RawButtonPress);
+			const bool up = (evtype == XI_RawButtonRelease);
+
+			/* Scroll wheel events are buttons 4-7 on X11, ignore them. */
+			if (button >= 4 && button <= 7) {
+				XFreeEventData(xiDisplay, &ev.xcookie);
+				continue;
+			}
+
+			if (down && markerOnlyOnClick)
+				captureMarkerClickPosition();
+
+			if (triggerType == "mouse" && (down || up)) {
+				if (mods_current(modCtrl, modAlt, modShift, modWin)) {
+					if (linux_button_matches(button, mouseButton)) {
+						if (hotkeyMode == "toggle") {
+							if (down)
+								onTriggerDown();
+						} else {
+							if (down)
+								onTriggerDown();
+							if (up)
+								onTriggerUp();
+						}
+					}
+				}
+			}
+		}
+
+		XFreeEventData(xiDisplay, &ev.xcookie);
+	}
+}
+#endif // __linux__
+
 bool ZoominatorController::modsMatch() const
 {
 	return mods_current(modCtrl, modAlt, modShift, modWin);
@@ -2019,6 +2563,10 @@ bool ZoominatorController::triggerMatchesMouse(unsigned int msg, unsigned short 
 	if (b == "x2")
 		return (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP) && mouseData == XBUTTON2;
 	return false;
+#elif defined(__linux__)
+	/* On Linux, msg holds the X11 button number, mouseData is unused. */
+	(void)mouseData;
+	return linux_button_matches((int)msg, mouseButton);
 #else
 	(void)msg;
 	(void)mouseData;
@@ -2155,8 +2703,89 @@ static int qtKeyToVk(int qtKey)
 		break;
 	}
 	return 0;
-#elif !defined(_WIN32)
-	(void)qtKey;
+#elif defined(__linux__)
+	/* On Linux we use X11 keysyms (XK_*) as our "virtual keycode" space. */
+	if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z)
+		return XK_a + (qtKey - Qt::Key_A);
+	if (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9)
+		return XK_0 + (qtKey - Qt::Key_0);
+	if (qtKey >= Qt::Key_F1 && qtKey <= Qt::Key_F24)
+		return XK_F1 + (qtKey - Qt::Key_F1);
+
+	switch (qtKey) {
+	case Qt::Key_Space:
+		return XK_space;
+	case Qt::Key_Return:
+	case Qt::Key_Enter:
+		return XK_Return;
+	case Qt::Key_Escape:
+		return XK_Escape;
+	case Qt::Key_Tab:
+		return XK_Tab;
+	case Qt::Key_Backspace:
+		return XK_BackSpace;
+	case Qt::Key_Delete:
+		return XK_Delete;
+	case Qt::Key_Left:
+		return XK_Left;
+	case Qt::Key_Right:
+		return XK_Right;
+	case Qt::Key_Up:
+		return XK_Up;
+	case Qt::Key_Down:
+		return XK_Down;
+	case Qt::Key_Home:
+		return XK_Home;
+	case Qt::Key_End:
+		return XK_End;
+	case Qt::Key_PageUp:
+		return XK_Page_Up;
+	case Qt::Key_PageDown:
+		return XK_Page_Down;
+	case Qt::Key_Insert:
+		return XK_Insert;
+	case Qt::Key_Print:
+		return XK_Print;
+	case Qt::Key_Pause:
+		return XK_Pause;
+	case Qt::Key_CapsLock:
+		return XK_Caps_Lock;
+	case Qt::Key_Shift:
+		return XK_Shift_L;
+	case Qt::Key_Control:
+		return XK_Control_L;
+	case Qt::Key_Alt:
+		return XK_Alt_L;
+	case Qt::Key_Meta:
+		return XK_Super_L;
+	case Qt::Key_Semicolon:
+		return XK_semicolon;
+	case Qt::Key_Equal:
+		return XK_equal;
+	case Qt::Key_Comma:
+		return XK_comma;
+	case Qt::Key_Minus:
+		return XK_minus;
+	case Qt::Key_Period:
+		return XK_period;
+	case Qt::Key_Slash:
+		return XK_slash;
+	case Qt::Key_QuoteLeft:
+		return XK_grave;
+	case Qt::Key_BracketLeft:
+		return XK_bracketleft;
+	case Qt::Key_Backslash:
+		return XK_backslash;
+	case Qt::Key_BracketRight:
+		return XK_bracketright;
+	default:
+		break;
+	}
+
+	/* Fallback: many Qt keys match the corresponding X11 keysym for printable ASCII. */
+	if (qtKey >= 0x20 && qtKey <= 0x7E)
+		return qtKey;
+
 	return 0;
 #else
 	if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z)
@@ -2281,6 +2910,12 @@ void ZoominatorController::rebuildTriggersFromSettings()
 			 followToggleHotkeyVk == kVK_Option || followToggleHotkeyVk == kVK_RightOption ||
 			 followToggleHotkeyVk == kVK_Shift || followToggleHotkeyVk == kVK_RightShift ||
 			 followToggleHotkeyVk == kVK_Command || followToggleHotkeyVk == kVK_RightCommand);
+#elif defined(__linux__)
+		const bool keyIsModifier =
+			(followToggleHotkeyVk == XK_Control_L || followToggleHotkeyVk == XK_Control_R ||
+			 followToggleHotkeyVk == XK_Alt_L || followToggleHotkeyVk == XK_Alt_R ||
+			 followToggleHotkeyVk == XK_Shift_L || followToggleHotkeyVk == XK_Shift_R ||
+			 followToggleHotkeyVk == XK_Super_L || followToggleHotkeyVk == XK_Super_R);
 #else
 		const bool keyIsModifier = false;
 #endif
@@ -2304,6 +2939,15 @@ void ZoominatorController::rebuildTriggersFromSettings()
 				(followToggleHotkeyVk == kVK_Shift || followToggleHotkeyVk == kVK_RightShift);
 			followToggleModWin =
 				(followToggleHotkeyVk == kVK_Command || followToggleHotkeyVk == kVK_RightCommand);
+#elif defined(__linux__)
+			followToggleModCtrl =
+				(followToggleHotkeyVk == XK_Control_L || followToggleHotkeyVk == XK_Control_R);
+			followToggleModAlt =
+				(followToggleHotkeyVk == XK_Alt_L || followToggleHotkeyVk == XK_Alt_R);
+			followToggleModShift =
+				(followToggleHotkeyVk == XK_Shift_L || followToggleHotkeyVk == XK_Shift_R);
+			followToggleModWin =
+				(followToggleHotkeyVk == XK_Super_L || followToggleHotkeyVk == XK_Super_R);
 #else
 			followToggleHotkeyVk = 0;
 #endif
@@ -2343,6 +2987,11 @@ void ZoominatorController::rebuildTriggersFromSettings()
 						    hotkeyVk == kVK_Option || hotkeyVk == kVK_RightOption ||
 						    hotkeyVk == kVK_Shift || hotkeyVk == kVK_RightShift ||
 						    hotkeyVk == kVK_Command || hotkeyVk == kVK_RightCommand);
+#elif defined(__linux__)
+			const bool keyIsModifier = (hotkeyVk == XK_Control_L || hotkeyVk == XK_Control_R ||
+						    hotkeyVk == XK_Alt_L || hotkeyVk == XK_Alt_R ||
+						    hotkeyVk == XK_Shift_L || hotkeyVk == XK_Shift_R ||
+						    hotkeyVk == XK_Super_L || hotkeyVk == XK_Super_R);
 #else
 			const bool keyIsModifier = (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt || key == Qt::Key_Meta);
 #endif
@@ -2357,6 +3006,11 @@ void ZoominatorController::rebuildTriggersFromSettings()
 				modAlt = (hotkeyVk == kVK_Option || hotkeyVk == kVK_RightOption);
 				modShift = (hotkeyVk == kVK_Shift || hotkeyVk == kVK_RightShift);
 				modWin = (hotkeyVk == kVK_Command || hotkeyVk == kVK_RightCommand);
+#elif defined(__linux__)
+				modCtrl = (hotkeyVk == XK_Control_L || hotkeyVk == XK_Control_R);
+				modAlt = (hotkeyVk == XK_Alt_L || hotkeyVk == XK_Alt_R);
+				modShift = (hotkeyVk == XK_Shift_L || hotkeyVk == XK_Shift_R);
+				modWin = (hotkeyVk == XK_Super_L || hotkeyVk == XK_Super_R);
 #else
 				modCtrl = (key == Qt::Key_Control);
 				modAlt = (key == Qt::Key_Alt);
@@ -2420,6 +3074,54 @@ void ZoominatorController::installHooks()
 			     "Grant Accessibility permission to OBS in System Settings > Privacy & Security > Accessibility.");
 		}
 	}
+#elif defined(__linux__)
+	g_ctl = this;
+
+	if (!xiDisplay) {
+		xiDisplay = XOpenDisplay(nullptr);
+		if (!xiDisplay) {
+			blog(LOG_WARNING, "[Zoominator] Failed to open X11 display for input hooks.");
+			return;
+		}
+
+		/* Check for XInput2 extension. */
+		int event, error;
+		if (!XQueryExtension(xiDisplay, "XInputExtension", &xiOpcode, &event, &error)) {
+			blog(LOG_WARNING, "[Zoominator] XInput2 extension not available.");
+			XCloseDisplay(xiDisplay);
+			xiDisplay = nullptr;
+			return;
+		}
+
+		/* Request XInput 2.0. */
+		int major = 2, minor = 0;
+		if (XIQueryVersion(xiDisplay, &major, &minor) != Success) {
+			blog(LOG_WARNING, "[Zoominator] XInput2 version query failed.");
+			XCloseDisplay(xiDisplay);
+			xiDisplay = nullptr;
+			return;
+		}
+
+		/* Select raw key and button events on the root window. */
+		unsigned char mask_bits[(XI_LASTEVENT + 7) / 8] = {};
+		XIEventMask evmask;
+		evmask.deviceid = XIAllMasterDevices;
+		evmask.mask_len = sizeof(mask_bits);
+		evmask.mask = mask_bits;
+		XISetMask(mask_bits, XI_RawKeyPress);
+		XISetMask(mask_bits, XI_RawKeyRelease);
+		XISetMask(mask_bits, XI_RawButtonPress);
+		XISetMask(mask_bits, XI_RawButtonRelease);
+		XISelectEvents(xiDisplay, DefaultRootWindow(xiDisplay), &evmask, 1);
+		XFlush(xiDisplay);
+
+		/* Use QSocketNotifier to integrate with Qt event loop. */
+		int fd = ConnectionNumber(xiDisplay);
+		xiNotifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
+		connect(xiNotifier, &QSocketNotifier::activated, this, &ZoominatorController::processXInput2Events);
+
+		blog(LOG_INFO, "[Zoominator] XInput2 global input hooks installed (XI %d.%d).", major, minor);
+	}
 #endif
 }
 
@@ -2445,6 +3147,16 @@ void ZoominatorController::uninstallHooks()
 		CGEventTapEnable(eventTap, false);
 		CFRelease(eventTap);
 		eventTap = nullptr;
+	}
+	g_ctl = nullptr;
+#elif defined(__linux__)
+	if (xiNotifier) {
+		delete xiNotifier;
+		xiNotifier = nullptr;
+	}
+	if (xiDisplay) {
+		XCloseDisplay(xiDisplay);
+		xiDisplay = nullptr;
 	}
 	g_ctl = nullptr;
 #endif

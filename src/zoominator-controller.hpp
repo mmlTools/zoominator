@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QKeySequence>
+#include <QSocketNotifier>
 #include <QTimer>
 #include <QString>
 
@@ -15,6 +16,11 @@
 #elif defined(__APPLE__)
 #	include <CoreFoundation/CoreFoundation.h>
 #	include <CoreGraphics/CoreGraphics.h>
+#elif defined(__linux__)
+/* X11 headers define macros (Bool, None, Status, CursorShape) that conflict
+   with Qt identifiers, so we only forward-declare Display here and include
+   the real X11 headers in the .cpp file after all Qt headers. */
+struct _XDisplay;
 #endif
 
 class ZoominatorDialog;
@@ -165,5 +171,10 @@ private:
 					   CGEventRef event, void *refcon);
 	CFMachPortRef eventTap = nullptr;
 	CFRunLoopSourceRef runLoopSource = nullptr;
+#elif defined(__linux__)
+	_XDisplay *xiDisplay = nullptr;
+	int xiOpcode = 0;
+	QSocketNotifier *xiNotifier = nullptr;
+	void processXInput2Events();
 #endif
 };
