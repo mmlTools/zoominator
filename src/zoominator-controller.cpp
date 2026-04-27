@@ -6,6 +6,7 @@
 
 #include <QGuiApplication>
 #include <QScreen>
+#include <QCursor>
 #include <QRect>
 #include <QKeySequence>
 #include <QKeyCombination>
@@ -585,43 +586,10 @@ bool ZoominatorController::getSelectedScreenRect(int &x, int &y, int &w, int &h)
 
 bool ZoominatorController::getCursorPos(int &x, int &y) const
 {
-#ifdef _WIN32
-	POINT p{};
-	if (!::GetCursorPos(&p))
-		return false;
-	x = (int)p.x;
-	y = (int)p.y;
+	const QPoint p = QCursor::pos();
+	x = p.x();
+	y = p.y();
 	return true;
-#elif defined(__APPLE__)
-	CGEventRef event = CGEventCreate(NULL);
-	if (!event)
-		return false;
-	CGPoint loc = CGEventGetLocation(event);
-	CFRelease(event);
-	x = (int)loc.x;
-	y = (int)loc.y;
-	return true;
-#elif defined(__linux__)
-	Display *dpy = XOpenDisplay(nullptr);
-	if (!dpy)
-		return false;
-	Window root = DefaultRootWindow(dpy);
-	Window retRoot = 0, retChild = 0;
-	int rootX = 0, rootY = 0, winX = 0, winY = 0;
-	unsigned int mask = 0;
-	int ok = XQueryPointer(dpy, root, &retRoot, &retChild, &rootX, &rootY, &winX, &winY, &mask);
-	XCloseDisplay(dpy);
-	(void)retRoot; (void)retChild; (void)winX; (void)winY; (void)mask;
-	if (!ok)
-		return false;
-	x = rootX;
-	y = rootY;
-	return true;
-#else
-	(void)x;
-	(void)y;
-	return false;
-#endif
 }
 
 static bool get_monitor_capture_selector(obs_source_t *src, QString &selector, int &monitorId, bool &hasId)
