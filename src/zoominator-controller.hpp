@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QKeySequence>
+#include <QSet>
 #include <QSocketNotifier>
 #include <QTimer>
 #include <QString>
@@ -70,6 +71,10 @@ public:
 	int markerSize = 26;
 	int markerThickness = 4;
 	bool debug = false;
+
+	
+	
+	QSet<QString> excludedSources;
 
 signals:
 	void settingsChanged();

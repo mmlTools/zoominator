@@ -4,7 +4,7 @@
 
 Zoominator is an OBS Studio plugin that dynamically **zooms and pans the entire scene** to follow your mouse, keeping the focus exactly where the action happens.
 
-It operates at the **scene level**, meaning it works with any source automatically—no per-source setup, no dock, no complexity.
+It operates at the **scene level**, meaning it works with any source automatically no per-source setup, no dock, no complexity.
 
 ---
 
@@ -14,7 +14,7 @@ It operates at the **scene level**, meaning it works with any source automatical
   Smoothly transforms the entire scene based on mouse position.
 
 - **Smart Clamping**  
-  Ensures the canvas is always fully covered—no black edges, even with cropped sources.
+  Ensures the canvas is always fully covered no black edges, even with cropped sources.
 
 - **Mouse-Driven Focus**  
   Keeps attention exactly where your cursor is.

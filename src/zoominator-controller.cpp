@@ -170,7 +170,6 @@ void ZoominatorController::showDialog()
 	dialog->activateWindow();
 }
 
-
 void ZoominatorController::loadSettings()
 {
 	screenKey.clear();
@@ -376,6 +375,23 @@ void ZoominatorController::loadSettings()
 	if (obs_data_has_user_value(data, "debug"))
 		debug = obs_data_get_bool(data, "debug");
 
+	
+	excludedSources.clear();
+	obs_data_array_t *exArr = obs_data_get_array(data, "excluded_sources");
+	if (exArr) {
+		const size_t exCount = obs_data_array_count(exArr);
+		for (size_t i = 0; i < exCount; i++) {
+			obs_data_t *exItem = obs_data_array_item(exArr, i);
+			if (exItem) {
+				const char *exName = obs_data_get_string(exItem, "name");
+				if (exName && *exName)
+					excludedSources.insert(QString::fromUtf8(exName));
+				obs_data_release(exItem);
+			}
+		}
+		obs_data_array_release(exArr);
+	}
+
 	obs_data_release(data);
 
 	logi(debug, "[Zoominator] Loaded settings from: %s", pUtf8.constData());
@@ -431,6 +447,17 @@ void ZoominatorController::saveSettings()
 	obs_data_set_int(data, "marker_size", markerSize);
 	obs_data_set_int(data, "marker_thickness", markerThickness);
 	obs_data_set_bool(data, "debug", debug);
+
+	
+	obs_data_array_t *exArr = obs_data_array_create();
+	for (const QString &exName : excludedSources) {
+		obs_data_t *exItem = obs_data_create();
+		obs_data_set_string(exItem, "name", exName.toUtf8().constData());
+		obs_data_array_push_back(exArr, exItem);
+		obs_data_release(exItem);
+	}
+	obs_data_set_array(data, "excluded_sources", exArr);
+	obs_data_array_release(exArr);
 
 	QByteArray pUtf8 = p.toUtf8();
 	obs_data_save_json_safe(data, pUtf8.constData(), "tmp", "bak");
@@ -516,6 +543,7 @@ void ZoominatorController::enumerateTargetItemsInCurrentScene(std::vector<obs_sc
 
 	struct Ctx {
 		std::vector<obs_sceneitem_t *> *items = nullptr;
+		const QSet<QString> *excluded = nullptr;
 
 		static bool is_marker_item(obs_sceneitem_t *item)
 		{
@@ -529,7 +557,6 @@ void ZoominatorController::enumerateTargetItemsInCurrentScene(std::vector<obs_sc
 			const char *srcName = obs_source_get_name(src);
 			return srcName && QString::fromUtf8(srcName) == QString::fromUtf8(kZoominatorMarkerSourceName);
 		}
-
 
 		static void enum_scene(obs_scene_t *scene, Ctx *ctx)
 		{
@@ -548,10 +575,17 @@ void ZoominatorController::enumerateTargetItemsInCurrentScene(std::vector<obs_sc
 					if (!src)
 						return true;
 
-
 					if (obs_scene_t *subScene = obs_scene_from_source(src)) {
 						enum_scene(subScene, ctx);
 						return true;
+					}
+
+					
+					if (ctx->excluded && !ctx->excluded->isEmpty()) {
+						const char *srcName = obs_source_get_name(src);
+						if (srcName &&
+						    ctx->excluded->contains(QString::fromUtf8(srcName)))
+							return true;
 					}
 
 					ctx->items->push_back(item);
@@ -561,7 +595,7 @@ void ZoominatorController::enumerateTargetItemsInCurrentScene(std::vector<obs_sc
 		}
 	};
 
-	Ctx ctx{&items};
+	Ctx ctx{&items, &excludedSources};
 	Ctx::enum_scene(scene, &ctx);
 }
 
@@ -586,6 +620,15 @@ bool ZoominatorController::getSelectedScreenRect(int &x, int &y, int &w, int &h)
 
 bool ZoominatorController::getCursorPos(int &x, int &y) const
 {
+	
+	
+	
+	
+	
+	
+	
+	
+	
 	const QPoint p = QCursor::pos();
 	x = p.x();
 	y = p.y();
@@ -954,7 +997,7 @@ static bool match_window_rect_for_source(obs_source_t *src, RECT &rcOut)
 	rcOut = rc;
 	return true;
 }
-#endif // _WIN32
+#endif 
 
 #ifdef __APPLE__
 struct MonitorInfoLite {
@@ -1101,7 +1144,7 @@ static bool match_window_rect_for_source(obs_source_t *src, CGRect &rcOut)
 	CFRelease(windowList);
 	return found;
 }
-#endif // __APPLE__
+#endif 
 
 #ifdef __linux__
 struct MonitorInfoLite {
@@ -1344,7 +1387,7 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 	XCloseDisplay(dpy);
 	return found;
 }
-#endif // __linux__
+#endif 
 
 bool ZoominatorController::mapCursorToScenePixels(int cursorX, int cursorY, float &sx, float &sy,
 					   bool &cursorInside) const
@@ -1374,7 +1417,6 @@ bool ZoominatorController::mapCursorToScenePixels(int cursorX, int cursorY, floa
 	sy = (float)(relY * ch);
 	return true;
 }
-
 
 void ZoominatorController::rebuildMarkerImage()
 {
@@ -1663,7 +1705,6 @@ void ZoominatorController::updateMarkerPosition(obs_scene_t *scene, double x, do
 	obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
 }
 
-
 void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
 {
 	if (!item)
@@ -1795,7 +1836,6 @@ void ZoominatorController::restoreOriginalSceneItems(const std::vector<obs_scene
 	for (auto *item : items)
 		restoreOriginal(item);
 }
-
 
 void ZoominatorController::applyZoomToScene(const std::vector<obs_sceneitem_t *> &items, double t)
 {
@@ -2164,7 +2204,6 @@ static bool vk_matches(int pressedVk, int wantVk)
 	return false;
 }
 
-
 static bool is_modifier_only_hotkey(int vk)
 {
 	switch (vk) {
@@ -2278,7 +2317,7 @@ LRESULT CALLBACK ZoominatorController::mouse_hook_proc(int nCode, WPARAM wParam,
 	}
 	return CallNextHookEx((HHOOK)g_ctl->mouseHook, nCode, wParam, lParam);
 }
-#endif // _WIN32
+#endif 
 
 #ifdef __APPLE__
 static inline bool is_modifier_vk(int vk)
@@ -2440,7 +2479,7 @@ CGEventRef ZoominatorController::eventTapCallback(CGEventTapProxy proxy, CGEvent
 
 	return event;
 }
-#endif // __APPLE__
+#endif 
 
 #ifdef __linux__
 static inline bool is_modifier_vk(int vk)
@@ -2572,7 +2611,6 @@ void ZoominatorController::processXInput2Events()
 				continue;
 			}
 
-
 			if (triggerType == "mouse" && (down || up)) {
 				if (mods_current(modCtrl, modAlt, modShift, modWin, modLeftCtrl, modRightCtrl, modLeftAlt, modRightAlt, modLeftShift, modRightShift, modLeftWin, modRightWin)) {
 					if (linux_button_matches(button, mouseButton)) {
@@ -2593,7 +2631,7 @@ void ZoominatorController::processXInput2Events()
 		XFreeEventData(xiDisplay, &ev.xcookie);
 	}
 }
-#endif // __linux__
+#endif 
 
 bool ZoominatorController::modsMatch() const
 {

@@ -1,13 +1,3 @@
-/*
-Zoominator - Professional Zoom & Mouse Follow tool for OBS Studio
-Copyright (C) 2026 Marco Maxim
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-*/
-
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 
@@ -21,7 +11,6 @@ static void open_dialog_cb(void *)
 {
 	ZoominatorController::instance().showDialog();
 }
-
 
 bool obs_module_load(void)
 {
