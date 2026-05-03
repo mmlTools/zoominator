@@ -62,6 +62,10 @@ static constexpr long X11_None = 0L;
 static int qtKeyToVk(int qtKey);
 
 static constexpr const char *kZoominatorMarkerSourceName = "Zoominator Cursor Marker";
+static constexpr const char *kZoominatorMarkerSourceId = "zoominator_marker_source";
+static void cleanup_legacy_marker_items_all_scenes(obs_source_t *currentMarkerSource = nullptr);
+static bool source_name_starts_with(const char *name, const char *prefix);
+static void collect_live_scene_items(obs_scene_t *scene, std::vector<obs_sceneitem_t *> &items);
 
 static inline double clampd(double v, double lo, double hi)
 {
@@ -97,6 +101,53 @@ static inline void logi(bool enabled, const char *fmt, ...)
 	va_end(args);
 }
 
+
+static bool source_name_starts_with(const char *name, const char *prefix)
+{
+	if (!name || !prefix || !*prefix)
+		return false;
+	return QString::fromUtf8(name).startsWith(QString::fromUtf8(prefix));
+}
+
+static void collect_live_scene_items(obs_scene_t *scene, std::vector<obs_sceneitem_t *> &items)
+{
+	if (!scene)
+		return;
+
+	struct Ctx {
+		std::vector<obs_sceneitem_t *> *items = nullptr;
+
+		static bool enum_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+		{
+			auto *ctx = static_cast<Ctx *>(param);
+			if (!ctx || !ctx->items || !item)
+				return true;
+
+			ctx->items->push_back(item);
+
+			obs_source_t *src = obs_sceneitem_get_source(item);
+			obs_scene_t *subScene = src ? obs_scene_from_source(src) : nullptr;
+			if (subScene)
+				collect_live_scene_items(subScene, *ctx->items);
+
+			return true;
+		}
+	};
+
+	Ctx ctx{&items};
+	obs_scene_enum_items(scene, Ctx::enum_cb, &ctx);
+}
+
+static bool scene_item_pointer_is_live(obs_scene_t *scene, obs_sceneitem_t *item)
+{
+	if (!scene || !item)
+		return false;
+
+	std::vector<obs_sceneitem_t *> liveItems;
+	collect_live_scene_items(scene, liveItems);
+	return std::find(liveItems.begin(), liveItems.end(), item) != liveItems.end();
+}
+
 ZoominatorController &ZoominatorController::instance()
 {
 	static ZoominatorController inst;
@@ -105,13 +156,12 @@ ZoominatorController &ZoominatorController::instance()
 
 ZoominatorController::ZoominatorController()
 {
-	tickTimer.setInterval(16);
+	tickTimer.setInterval(33);
 	connect(&tickTimer, &QTimer::timeout, this, &ZoominatorController::onTick);
 }
 
 ZoominatorController::~ZoominatorController()
 {
-	markerFilter = nullptr;
 	markerSource = nullptr;
 }
 
@@ -381,6 +431,7 @@ void ZoominatorController::frontendEventCallback(enum obs_frontend_event event, 
 	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING ||
 	    event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED ||
 	    event == OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED) {
+		QTimer::singleShot(0, ctl, [ctl]() { cleanup_legacy_marker_items_all_scenes(ctl->markerSource); });
 		QTimer::singleShot(0, ctl, [ctl]() { ctl->requestRecoveryRestore(); });
 		QTimer::singleShot(500, ctl, [ctl]() { ctl->requestRecoveryRestore(); });
 	}
@@ -421,6 +472,7 @@ void ZoominatorController::initialize()
 	loadSettings();
 	rebuildTriggersFromSettings();
 	obs_frontend_add_event_callback(frontendEventCallback, this);
+	QTimer::singleShot(0, this, [this]() { cleanup_legacy_marker_items_all_scenes(markerSource); });
 	QTimer::singleShot(0, this, [this]() { requestRecoveryRestore(); });
 	QTimer::singleShot(750, this, [this]() { requestRecoveryRestore(); });
 	QTimer::singleShot(2000, this, [this]() { requestRecoveryRestore(); });
@@ -845,7 +897,10 @@ void ZoominatorController::enumerateTargetItemsInCurrentScene(std::vector<obs_sc
 			if (src == ZoominatorController::instance().markerSource)
 				return true;
 			const char *srcName = obs_source_get_name(src);
-			return srcName && QString::fromUtf8(srcName) == QString::fromUtf8(kZoominatorMarkerSourceName);
+			const char *srcId = obs_source_get_id(src);
+			if (srcId && QString::fromUtf8(srcId) == QString::fromUtf8(kZoominatorMarkerSourceId))
+				return true;
+			return source_name_starts_with(srcName, kZoominatorMarkerSourceName);
 		}
 
 		static void enum_scene(obs_scene_t *scene, Ctx *ctx)
@@ -1708,6 +1763,86 @@ bool ZoominatorController::mapCursorToScenePixels(int cursorX, int cursorY, floa
 	return true;
 }
 
+
+
+
+static void remove_legacy_marker_items(obs_scene_t *scene, obs_source_t *currentMarkerSource)
+{
+	if (!scene)
+		return;
+
+	struct Ctx {
+		obs_source_t *current = nullptr;
+		std::vector<obs_sceneitem_t *> items;
+
+		static bool enum_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+		{
+			auto *ctx = static_cast<Ctx *>(param);
+			if (!ctx || !item)
+				return true;
+
+			obs_source_t *src = obs_sceneitem_get_source(item);
+			if (!src || src == ctx->current)
+				return true;
+
+			const char *name = obs_source_get_name(src);
+			const char *id = obs_source_get_id(src);
+			const bool markerName = source_name_starts_with(name, kZoominatorMarkerSourceName);
+			const bool oldImageSource = id && QString::fromUtf8(id) == QStringLiteral("image_source");
+			const bool oldProceduralMarker = id && QString::fromUtf8(id) == QString::fromUtf8(kZoominatorMarkerSourceId) && src != ctx->current;
+			if (markerName && (oldImageSource || oldProceduralMarker))
+				ctx->items.push_back(item);
+
+			return true;
+		}
+	};
+
+	Ctx ctx{currentMarkerSource, {}};
+	obs_scene_enum_items(scene, Ctx::enum_cb, &ctx);
+	for (obs_sceneitem_t *item : ctx.items)
+		obs_sceneitem_remove(item);
+}
+
+static void cleanup_legacy_marker_items_all_scenes(obs_source_t *currentMarkerSource)
+{
+	obs_frontend_source_list scenes{};
+	obs_frontend_get_scenes(&scenes);
+	for (size_t i = 0; i < scenes.sources.num; i++) {
+		obs_source_t *sceneSource = scenes.sources.array[i];
+		obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+		if (scene)
+			remove_legacy_marker_items(scene, currentMarkerSource);
+	}
+	obs_frontend_source_list_free(&scenes);
+}
+
+
+static void normalize_marker_scene_item(obs_sceneitem_t *item)
+{
+	if (!item)
+		return;
+
+	// The marker is a small source-local shader quad. Keep the scene item at
+	// native size; otherwise OBS may reuse an old stretched/bounded transform and
+	// the ring appears across the whole canvas instead of around the cursor.
+	obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
+	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_NONE);
+	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
+	obs_sceneitem_set_rot(item, 0.0f);
+
+	vec2 scale{};
+	scale.x = 1.0f;
+	scale.y = 1.0f;
+	obs_sceneitem_set_scale(item, &scale);
+
+	obs_sceneitem_crop crop{};
+	obs_sceneitem_set_crop(item, &crop);
+
+	obs_sceneitem_set_locked(item, true);
+	obs_sceneitem_set_visible(item, true);
+	obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
+}
+
 void ZoominatorController::rebuildMarkerImage()
 {
 	const int size = std::clamp(markerSize, 6, 512);
@@ -1817,6 +1952,8 @@ obs_sceneitem_t *ZoominatorController::ensureMarkerItem(obs_scene_t *scene)
 	if (!markerSource)
 		return nullptr;
 
+	remove_legacy_marker_items(scene, markerSource);
+
 	struct Finder {
 		obs_source_t *want = nullptr;
 		obs_sceneitem_t *found = nullptr;
@@ -1837,17 +1974,16 @@ obs_sceneitem_t *ZoominatorController::ensureMarkerItem(obs_scene_t *scene)
 
 	Finder finder{markerSource, nullptr};
 	obs_scene_enum_items(scene, Finder::enum_cb, &finder);
-	if (finder.found)
+	if (finder.found) {
+		normalize_marker_scene_item(finder.found);
 		return finder.found;
+	}
 
 	obs_sceneitem_t *item = obs_scene_add(scene, markerSource);
 	if (!item)
 		return nullptr;
 
-	obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
-	obs_sceneitem_set_locked(item, true);
-	obs_sceneitem_set_visible(item, true);
-	obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
+	normalize_marker_scene_item(item);
 	return item;
 }
 
@@ -1855,6 +1991,8 @@ void ZoominatorController::hideMarkerInScene(obs_scene_t *scene)
 {
 	if (!scene || !markerSource)
 		return;
+
+	remove_legacy_marker_items(scene, markerSource);
 
 	struct Finder {
 		obs_source_t *want = nullptr;
@@ -1904,6 +2042,7 @@ void ZoominatorController::updateMarkerAppearance()
 	markerAppearanceHash = appearanceHash;
 	markerCurrentOpacity = -1;
 }
+
 
 bool ZoominatorController::captureMarkerClickPosition()
 {
@@ -1983,6 +2122,11 @@ void ZoominatorController::updateMarkerPosition(obs_scene_t *scene, double x, do
 
 	updateMarkerAppearance();
 	applyMarkerOpacity(clampedOpacity);
+
+	if (!scene_item_pointer_is_live(scene, item))
+		return;
+
+	normalize_marker_scene_item(item);
 
 	vec2 pos{};
 	pos.x = (float)x;
@@ -2134,13 +2278,19 @@ void ZoominatorController::applyZoomToScene(double t)
 	if (sceneItems.empty())
 		return;
 
-	obs_scene_t *scene = nullptr;
-	if (showCursorMarker) {
-		obs_source_t *sceneSource = obs_frontend_get_current_scene();
-		scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
-		if (sceneSource)
-			obs_source_release(sceneSource);
-	}
+	obs_source_t *sceneSource = obs_frontend_get_current_scene();
+	obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+	if (sceneSource)
+		obs_source_release(sceneSource);
+
+	if (!scene)
+		return;
+
+	std::vector<obs_sceneitem_t *> liveItems;
+	collect_live_scene_items(scene, liveItems);
+	auto isLiveItem = [&liveItems](obs_sceneitem_t *item) {
+		return item && std::find(liveItems.begin(), liveItems.end(), item) != liveItems.end();
+	};
 
 	const double tt = smoothstep(clampd(t, 0.0, 1.0));
 	const double zTarget = (zoomFactor <= 1.0) ? 1.0 : zoomFactor;
@@ -2174,14 +2324,36 @@ void ZoominatorController::applyZoomToScene(double t)
 				followY = my;
 				followHasPos = true;
 			} else {
-				const double alpha = 1.0 - std::exp(-followSpeed * tickDeltaSeconds);
-				followX = (float)(followX + (mx - followX) * alpha);
-				followY = (float)(followY + (my - followY) * alpha);
+				const double dx = (double)mx - (double)followX;
+				const double dy = (double)my - (double)followY;
+				const double dist = std::sqrt(dx * dx + dy * dy);
+
+				// Smooth but responsive mouse-follow. The UI speed now controls both
+				// interpolation strength and the maximum travel per frame. Low speed gives
+				// cinematic drift; high speed follows quickly without snapping to raw mouse input.
+				const double effectiveSpeed = clampd(followSpeed, 0.25, 30.0);
+				const double deadZonePx = clampd(10.0 - effectiveSpeed * 0.22, 2.0, 10.0);
+				if (dist > deadZonePx) {
+					const double adjustedDist = dist - deadZonePx;
+					const double nx = dx / dist;
+					const double ny = dy / dist;
+
+					const double response = 1.0 - std::exp(-(1.8 + effectiveSpeed * 1.15) * tickDeltaSeconds);
+					double stepLen = adjustedDist * clampd(response, 0.02, 0.82);
+
+					const double maxPixelsPerSecond = 240.0 + effectiveSpeed * 185.0;
+					const double maxStep = maxPixelsPerSecond * tickDeltaSeconds;
+					if (stepLen > maxStep)
+						stepLen = maxStep;
+
+					followX = (float)((double)followX + nx * stepLen);
+					followY = (float)((double)followY + ny * stepLen);
+				}
 			}
 			fx = followX;
 			fy = followY;
-			anchorX = mx;
-			anchorY = my;
+			anchorX = followX;
+			anchorY = followY;
 		} else if (followHasPos) {
 			fx = followX;
 			fy = followY;
@@ -2273,7 +2445,7 @@ void ZoominatorController::applyZoomToScene(double t)
 
 	const uint32_t topLeftAlign = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
 	for (auto &state : sceneItems) {
-		if (!state.item || !state.orig.valid)
+		if (!state.item || !state.orig.valid || !isLiveItem(state.item))
 			continue;
 
 		if (!state.normalized) {
