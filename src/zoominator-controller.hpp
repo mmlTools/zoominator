@@ -1,6 +1,7 @@
 #pragma once
 
 #include <obs-module.h>
+#include <obs-frontend-api.h>
 
 #include <QObject>
 #include <QPointer>
@@ -8,7 +9,9 @@
 #include <QSet>
 #include <QSocketNotifier>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QString>
+#include <QHash>
 #include <vector>
 
 #ifdef _WIN32
@@ -114,6 +117,7 @@ private:
 	void restoreOriginal(obs_sceneitem_t *item);
 	void captureOriginalSceneItems(const std::vector<obs_sceneitem_t *> &items);
 	void restoreOriginalSceneItems(const std::vector<obs_sceneitem_t *> &items);
+	void restoreOriginalSceneItemsFromState();
 	QString markerImagePath() const;
 	void ensureMarkerSource();
 	obs_sceneitem_t *ensureMarkerItem(obs_scene_t *scene);
@@ -126,7 +130,7 @@ private:
 	bool captureMarkerClickPosition();
 	bool isMarkerFlashActive(qint64 nowMs) const;
 	int currentMarkerOpacity(qint64 nowMs);
-	void applyZoomToScene(const std::vector<obs_sceneitem_t *> &items, double t);
+	void applyZoomToScene(double t);
 
 	QTimer tickTimer;
 	bool zoomPressed = false;
@@ -141,6 +145,12 @@ private:
 	float followY = 0.0f;
 
 	bool targetHasPos = false;
+	double tickDeltaSeconds = 1.0 / 60.0;
+	qint64 lastTickMs = 0;
+	qint64 lastTransformApplyMs = 0;
+	float lastFollowAnchorX = 0.0f;
+	float lastFollowAnchorY = 0.0f;
+	bool lastFollowAnchorValid = false;
 	float targetX = 0.0f;
 	float targetY = 0.0f;
 
@@ -171,9 +181,30 @@ private:
 	struct SceneItemState {
 		obs_sceneitem_t *item = nullptr;
 		OrigState orig;
+		bool normalized = false;
+		bool lastAppliedValid = false;
+		vec2 lastAppliedPos{};
+		vec2 lastAppliedScale{};
 	};
 
+	QString sceneItemKey(obs_sceneitem_t *item) const;
+	OrigState readSceneItemTransform(obs_sceneitem_t *item) const;
+	void applySceneItemTransform(obs_sceneitem_t *item, const OrigState &state);
+	void loadRecoveryMap(obs_data_t *data);
+	void saveRecoveryMap(obs_data_t *data);
+	void scheduleSettingsSave(int delayMs = 250);
+	void restoreRecoveryIfNeeded();
+	void markRecoveryActive();
+	void clearRecoveryActive();
+	void requestRecoveryRestore();
+	static void frontendEventCallback(enum obs_frontend_event event, void *data);
+
 	std::vector<SceneItemState> sceneItems;
+	QHash<QString, OrigState> recoveryTransforms;
+	bool pendingSettingsSave = false;
+	bool shuttingDown = false;
+	bool recoveryActive = false;
+	bool restoringRecovery = false;
 	bool sceneContentBoundsValid = false;
 	vec2 sceneContentMin{};
 	vec2 sceneContentMax{};

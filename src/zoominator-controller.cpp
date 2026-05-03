@@ -77,6 +77,16 @@ static inline double smoothstep(double t)
 	return t * t * (3.0 - 2.0 * t);
 }
 
+static inline bool nearly_equal(float a, float b, float eps = 0.5f)
+{
+	return std::fabs(a - b) <= eps;
+}
+
+static inline bool nearly_equal_vec2(const vec2 &a, const vec2 &b, float eps = 0.01f)
+{
+	return nearly_equal(a.x, b.x, eps) && nearly_equal(a.y, b.y, eps);
+}
+
 static inline void logi(bool enabled, const char *fmt, ...)
 {
 	if (!enabled)
@@ -101,14 +111,8 @@ ZoominatorController::ZoominatorController()
 
 ZoominatorController::~ZoominatorController()
 {
-	if (markerFilter) {
-		obs_source_release(markerFilter);
-		markerFilter = nullptr;
-	}
-	if (markerSource) {
-		obs_source_release(markerSource);
-		markerSource = nullptr;
-	}
+	markerFilter = nullptr;
+	markerSource = nullptr;
 }
 
 QString ZoominatorController::configPath() const
@@ -131,6 +135,275 @@ QString ZoominatorController::markerImagePath() const
 	return p;
 }
 
+QString ZoominatorController::sceneItemKey(obs_sceneitem_t *item) const
+{
+	if (!item)
+		return {};
+
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	obs_scene_t *scene = obs_sceneitem_get_scene(item);
+	obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
+
+	const char *sceneName = sceneSource ? obs_source_get_name(sceneSource) : nullptr;
+	const char *sourceName = src ? obs_source_get_name(src) : nullptr;
+	const int64_t itemId = obs_sceneitem_get_id(item);
+
+	if (!sceneName || !*sceneName || !sourceName || !*sourceName)
+		return {};
+
+	return QStringLiteral("%1::%2::%3")
+		.arg(QString::fromUtf8(sceneName))
+		.arg(QString::fromUtf8(sourceName))
+		.arg(itemId);
+}
+
+ZoominatorController::OrigState ZoominatorController::readSceneItemTransform(obs_sceneitem_t *item) const
+{
+	OrigState state{};
+	if (!item)
+		return state;
+
+	obs_sceneitem_get_pos(item, &state.pos);
+	obs_sceneitem_get_scale(item, &state.scale);
+	state.rot = obs_sceneitem_get_rot(item);
+	state.align = obs_sceneitem_get_alignment(item);
+	state.boundsType = obs_sceneitem_get_bounds_type(item);
+	state.boundsAlign = obs_sceneitem_get_bounds_alignment(item);
+	obs_sceneitem_get_bounds(item, &state.bounds);
+	obs_sceneitem_get_crop(item, &state.crop);
+	state.valid = true;
+	return state;
+}
+
+void ZoominatorController::applySceneItemTransform(obs_sceneitem_t *item, const OrigState &state)
+{
+	if (!item || !state.valid)
+		return;
+
+	obs_sceneitem_set_pos(item, &state.pos);
+	obs_sceneitem_set_scale(item, &state.scale);
+	obs_sceneitem_set_rot(item, state.rot);
+	obs_sceneitem_set_alignment(item, state.align);
+	obs_sceneitem_set_bounds_type(item, state.boundsType);
+	obs_sceneitem_set_bounds_alignment(item, state.boundsAlign);
+	obs_sceneitem_set_bounds(item, &state.bounds);
+	obs_sceneitem_set_crop(item, &state.crop);
+}
+
+void ZoominatorController::loadRecoveryMap(obs_data_t *data)
+{
+	recoveryTransforms.clear();
+	if (!data)
+		return;
+
+	obs_data_array_t *arr = obs_data_get_array(data, "recovery_transforms");
+	if (!arr)
+		return;
+
+	const size_t count = obs_data_array_count(arr);
+	for (size_t i = 0; i < count; i++) {
+		obs_data_t *row = obs_data_array_item(arr, i);
+		if (!row)
+			continue;
+
+		const char *rawKey = obs_data_get_string(row, "key");
+		if (rawKey && *rawKey) {
+			OrigState state{};
+			state.pos.x = (float)obs_data_get_double(row, "pos_x");
+			state.pos.y = (float)obs_data_get_double(row, "pos_y");
+			state.scale.x = (float)obs_data_get_double(row, "scale_x");
+			state.scale.y = (float)obs_data_get_double(row, "scale_y");
+			state.rot = (float)obs_data_get_double(row, "rot");
+			state.align = (uint32_t)obs_data_get_int(row, "align");
+			state.boundsType = (obs_bounds_type)obs_data_get_int(row, "bounds_type");
+			state.boundsAlign = (uint32_t)obs_data_get_int(row, "bounds_align");
+			state.bounds.x = (float)obs_data_get_double(row, "bounds_x");
+			state.bounds.y = (float)obs_data_get_double(row, "bounds_y");
+			state.crop.left = (int)obs_data_get_int(row, "crop_left");
+			state.crop.top = (int)obs_data_get_int(row, "crop_top");
+			state.crop.right = (int)obs_data_get_int(row, "crop_right");
+			state.crop.bottom = (int)obs_data_get_int(row, "crop_bottom");
+			state.valid = true;
+			recoveryTransforms.insert(QString::fromUtf8(rawKey), state);
+		}
+
+		obs_data_release(row);
+	}
+
+	obs_data_array_release(arr);
+}
+
+void ZoominatorController::saveRecoveryMap(obs_data_t *data)
+{
+	if (!data)
+		return;
+
+	obs_data_array_t *arr = obs_data_array_create();
+	for (auto it = recoveryTransforms.constBegin(); it != recoveryTransforms.constEnd(); ++it) {
+		const OrigState &state = it.value();
+		if (!state.valid)
+			continue;
+
+		obs_data_t *row = obs_data_create();
+		obs_data_set_string(row, "key", it.key().toUtf8().constData());
+		obs_data_set_double(row, "pos_x", state.pos.x);
+		obs_data_set_double(row, "pos_y", state.pos.y);
+		obs_data_set_double(row, "scale_x", state.scale.x);
+		obs_data_set_double(row, "scale_y", state.scale.y);
+		obs_data_set_double(row, "rot", state.rot);
+		obs_data_set_int(row, "align", (long long)state.align);
+		obs_data_set_int(row, "bounds_type", (long long)state.boundsType);
+		obs_data_set_int(row, "bounds_align", (long long)state.boundsAlign);
+		obs_data_set_double(row, "bounds_x", state.bounds.x);
+		obs_data_set_double(row, "bounds_y", state.bounds.y);
+		obs_data_set_int(row, "crop_left", state.crop.left);
+		obs_data_set_int(row, "crop_top", state.crop.top);
+		obs_data_set_int(row, "crop_right", state.crop.right);
+		obs_data_set_int(row, "crop_bottom", state.crop.bottom);
+		obs_data_array_push_back(arr, row);
+		obs_data_release(row);
+	}
+
+	obs_data_set_array(data, "recovery_transforms", arr);
+	obs_data_array_release(arr);
+}
+
+void ZoominatorController::scheduleSettingsSave(int delayMs)
+{
+	if (shuttingDown || pendingSettingsSave)
+		return;
+
+	pendingSettingsSave = true;
+	QTimer::singleShot(std::max(0, delayMs), this, [this]() {
+		pendingSettingsSave = false;
+		if (!shuttingDown)
+			saveSettings();
+	});
+}
+
+void ZoominatorController::restoreRecoveryIfNeeded()
+{
+	if (!recoveryActive)
+		return;
+
+	if (recoveryTransforms.isEmpty()) {
+		clearRecoveryActive();
+		return;
+	}
+
+	restoringRecovery = true;
+
+	obs_frontend_source_list scenes{};
+	obs_frontend_get_scenes(&scenes);
+
+	struct Ctx {
+		ZoominatorController *ctl = nullptr;
+		int restored = 0;
+		static void enumScene(obs_scene_t *scene, Ctx *ctx)
+		{
+			if (!scene || !ctx || !ctx->ctl)
+				return;
+			obs_scene_enum_items(
+				scene,
+				[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+					auto *ctx = static_cast<Ctx *>(param);
+					if (!ctx || !ctx->ctl || !item)
+						return true;
+
+					const QString key = ctx->ctl->sceneItemKey(item);
+					if (!key.isEmpty() && ctx->ctl->recoveryTransforms.contains(key)) {
+						ctx->ctl->applySceneItemTransform(item, ctx->ctl->recoveryTransforms.value(key));
+						ctx->restored++;
+					} else {
+						obs_source_t *src = obs_sceneitem_get_source(item);
+						obs_scene_t *scene = obs_sceneitem_get_scene(item);
+						obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
+						const char *sceneName = sceneSource ? obs_source_get_name(sceneSource) : nullptr;
+						const char *sourceName = src ? obs_source_get_name(src) : nullptr;
+						if (sceneName && *sceneName && sourceName && *sourceName) {
+							const QString prefix = QStringLiteral("%1::%2::").arg(QString::fromUtf8(sceneName)).arg(QString::fromUtf8(sourceName));
+							QString matched;
+							for (auto it = ctx->ctl->recoveryTransforms.constBegin(); it != ctx->ctl->recoveryTransforms.constEnd(); ++it) {
+								if (!it.key().startsWith(prefix))
+									continue;
+								if (!matched.isEmpty()) {
+									matched.clear();
+									break;
+								}
+								matched = it.key();
+							}
+							if (!matched.isEmpty()) {
+								ctx->ctl->applySceneItemTransform(item, ctx->ctl->recoveryTransforms.value(matched));
+								ctx->restored++;
+							}
+						}
+					}
+
+					obs_source_t *src = obs_sceneitem_get_source(item);
+					obs_scene_t *subScene = src ? obs_scene_from_source(src) : nullptr;
+					if (subScene)
+						Ctx::enumScene(subScene, ctx);
+
+					return true;
+				},
+				ctx);
+		}
+	};
+
+	Ctx ctx{this};
+	for (size_t i = 0; i < scenes.sources.num; i++) {
+		obs_source_t *sceneSource = scenes.sources.array[i];
+		obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+		if (scene)
+			Ctx::enumScene(scene, &ctx);
+	}
+
+	obs_frontend_source_list_free(&scenes);
+
+	restoringRecovery = false;
+	if (ctx.restored > 0)
+		clearRecoveryActive();
+}
+
+void ZoominatorController::requestRecoveryRestore()
+{
+	if (shuttingDown || !recoveryActive)
+		return;
+	restoreRecoveryIfNeeded();
+}
+
+void ZoominatorController::frontendEventCallback(enum obs_frontend_event event, void *data)
+{
+	auto *ctl = static_cast<ZoominatorController *>(data);
+	if (!ctl || ctl->shuttingDown)
+		return;
+
+	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING ||
+	    event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED ||
+	    event == OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED) {
+		QTimer::singleShot(0, ctl, [ctl]() { ctl->requestRecoveryRestore(); });
+		QTimer::singleShot(500, ctl, [ctl]() { ctl->requestRecoveryRestore(); });
+	}
+}
+
+void ZoominatorController::markRecoveryActive()
+{
+	if (recoveryActive)
+		return;
+	recoveryActive = true;
+	if (!shuttingDown)
+		saveSettings();
+}
+
+void ZoominatorController::clearRecoveryActive()
+{
+	if (!recoveryActive)
+		return;
+	recoveryActive = false;
+	if (!shuttingDown)
+		saveSettings();
+}
+
 static void ensure_parent_dir_exists(const QString &filePath)
 {
 	if (filePath.isEmpty())
@@ -147,15 +420,21 @@ void ZoominatorController::initialize()
 {
 	loadSettings();
 	rebuildTriggersFromSettings();
+	obs_frontend_add_event_callback(frontendEventCallback, this);
+	QTimer::singleShot(0, this, [this]() { requestRecoveryRestore(); });
+	QTimer::singleShot(750, this, [this]() { requestRecoveryRestore(); });
+	QTimer::singleShot(2000, this, [this]() { requestRecoveryRestore(); });
 	installHooks();
 }
 
 void ZoominatorController::shutdown()
 {
-	saveSettings();
+	shuttingDown = true;
+	obs_frontend_remove_event_callback(frontendEventCallback, this);
 	uninstallHooks();
 	ensureTicking(false);
-	resetState();
+	if (dialog)
+		dialog->close();
 }
 
 void ZoominatorController::showDialog()
@@ -392,6 +671,9 @@ void ZoominatorController::loadSettings()
 		obs_data_array_release(exArr);
 	}
 
+	recoveryActive = obs_data_get_bool(data, "recovery_active");
+	loadRecoveryMap(data);
+
 	obs_data_release(data);
 
 	logi(debug, "[Zoominator] Loaded settings from: %s", pUtf8.constData());
@@ -447,8 +729,9 @@ void ZoominatorController::saveSettings()
 	obs_data_set_int(data, "marker_size", markerSize);
 	obs_data_set_int(data, "marker_thickness", markerThickness);
 	obs_data_set_bool(data, "debug", debug);
+	obs_data_set_bool(data, "recovery_active", recoveryActive);
+	saveRecoveryMap(data);
 
-	
 	obs_data_array_t *exArr = obs_data_array_create();
 	for (const QString &exName : excludedSources) {
 		obs_data_t *exItem = obs_data_create();
@@ -482,12 +765,15 @@ void ZoominatorController::ensureTicking(bool on)
 
 void ZoominatorController::startZoomIn()
 {
+	markRecoveryActive();
+	lastTickMs = 0;
 	animDir = +1;
 	ensureTicking(true);
 }
 
 void ZoominatorController::startZoomOut()
 {
+	lastTickMs = 0;
 	animDir = -1;
 	markerClickFlashStartMs = 0;
 	markerClickFlashHoldUntilMs = 0;
@@ -505,6 +791,10 @@ void ZoominatorController::resetState()
 	animDir = 0;
 	followHasPos = false;
 	targetHasPos = false;
+	tickDeltaSeconds = 1.0 / 60.0;
+	lastTickMs = 0;
+	lastTransformApplyMs = 0;
+	lastFollowAnchorValid = false;
 	sceneItems.clear();
 	sceneContentBoundsValid = false;
 	sceneContentMin = {};
@@ -1699,25 +1989,19 @@ void ZoominatorController::updateMarkerPosition(obs_scene_t *scene, double x, do
 	pos.y = (float)y;
 	obs_sceneitem_set_pos(item, &pos);
 
-	if (!obs_sceneitem_visible(item))
+	if (!obs_sceneitem_visible(item)) {
 		obs_sceneitem_set_visible(item, true);
-
-	obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
+		obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
+	}
 }
 
 void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
 {
 	if (!item)
 		return;
-	OrigState orig{};
-	obs_sceneitem_get_pos(item, &orig.pos);
-	obs_sceneitem_get_scale(item, &orig.scale);
-	orig.rot = obs_sceneitem_get_rot(item);
-	orig.align = obs_sceneitem_get_alignment(item);
-	orig.boundsType = obs_sceneitem_get_bounds_type(item);
-	orig.boundsAlign = obs_sceneitem_get_bounds_alignment(item);
-	obs_sceneitem_get_bounds(item, &orig.bounds);
-	obs_sceneitem_get_crop(item, &orig.crop);
+	OrigState orig = readSceneItemTransform(item);
+	if (!orig.valid)
+		return;
 
 	float renderedW = 0.0f;
 	float renderedH = 0.0f;
@@ -1769,6 +2053,10 @@ void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
 
 	orig.valid = true;
 
+	const QString key = sceneItemKey(item);
+	if (!key.isEmpty())
+		recoveryTransforms.insert(key, orig);
+
 	SceneItemState state{};
 	state.item = item;
 	state.orig = orig;
@@ -1781,6 +2069,9 @@ void ZoominatorController::captureOriginalSceneItems(const std::vector<obs_scene
 	sceneContentBoundsValid = false;
 	for (auto *item : items)
 		captureOriginal(item);
+
+	if (recoveryActive && !sceneItems.empty())
+		saveSettings();
 
 	for (const auto &state : sceneItems) {
 		if (!state.item || !state.orig.valid)
@@ -1819,14 +2110,7 @@ void ZoominatorController::restoreOriginal(obs_sceneitem_t *item)
 	for (const auto &state : sceneItems) {
 		if (state.item != item || !state.orig.valid)
 			continue;
-		obs_sceneitem_set_pos(item, &state.orig.pos);
-		obs_sceneitem_set_scale(item, &state.orig.scale);
-		obs_sceneitem_set_rot(item, state.orig.rot);
-		obs_sceneitem_set_alignment(item, state.orig.align);
-		obs_sceneitem_set_bounds_type(item, state.orig.boundsType);
-		obs_sceneitem_set_bounds_alignment(item, state.orig.boundsAlign);
-		obs_sceneitem_set_bounds(item, &state.orig.bounds);
-		obs_sceneitem_set_crop(item, &state.orig.crop);
+		applySceneItemTransform(item, state.orig);
 		return;
 	}
 }
@@ -1837,15 +2121,26 @@ void ZoominatorController::restoreOriginalSceneItems(const std::vector<obs_scene
 		restoreOriginal(item);
 }
 
-void ZoominatorController::applyZoomToScene(const std::vector<obs_sceneitem_t *> &items, double t)
+void ZoominatorController::restoreOriginalSceneItemsFromState()
 {
-	if (items.empty() || sceneItems.empty())
+	for (const auto &state : sceneItems) {
+		if (state.item && state.orig.valid)
+			applySceneItemTransform(state.item, state.orig);
+	}
+}
+
+void ZoominatorController::applyZoomToScene(double t)
+{
+	if (sceneItems.empty())
 		return;
 
-	obs_source_t *sceneSource = obs_frontend_get_current_scene();
-	obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
-	if (sceneSource)
-		obs_source_release(sceneSource);
+	obs_scene_t *scene = nullptr;
+	if (showCursorMarker) {
+		obs_source_t *sceneSource = obs_frontend_get_current_scene();
+		scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+		if (sceneSource)
+			obs_source_release(sceneSource);
+	}
 
 	const double tt = smoothstep(clampd(t, 0.0, 1.0));
 	const double zTarget = (zoomFactor <= 1.0) ? 1.0 : zoomFactor;
@@ -1879,8 +2174,7 @@ void ZoominatorController::applyZoomToScene(const std::vector<obs_sceneitem_t *>
 				followY = my;
 				followHasPos = true;
 			} else {
-				const double dt = tickTimer.interval() / 1000.0;
-				const double alpha = 1.0 - std::exp(-followSpeed * dt);
+				const double alpha = 1.0 - std::exp(-followSpeed * tickDeltaSeconds);
 				followX = (float)(followX + (mx - followX) * alpha);
 				followY = (float)(followY + (my - followY) * alpha);
 			}
@@ -1956,27 +2250,61 @@ void ZoominatorController::applyZoomToScene(const std::vector<obs_sceneitem_t *>
 		offsetY = (minOffsetY + maxOffsetY) * 0.5;
 	}
 
+	const qint64 nowApplyMs = QDateTime::currentMSecsSinceEpoch();
+	const bool steadyFollow = followMouse && followMouseRuntimeEnabled && animDir == 0 && animT >= 0.999;
+	if (steadyFollow) {
+		const float dx = anchorX - lastFollowAnchorX;
+		const float dy = anchorY - lastFollowAnchorY;
+		const bool anchorMovedEnough = !lastFollowAnchorValid || ((dx * dx + dy * dy) >= 1.0f);
+		if (!anchorMovedEnough && nowApplyMs - lastTransformApplyMs < 16) {
+			if (scene && showCursorMarker && markerHasPoint) {
+				const double markerDisplayX = (double)anchorX + ((double)markerSceneX - (double)fx) * z + offsetX;
+				const double markerDisplayY = (double)anchorY + ((double)markerSceneY - (double)fy) * z + offsetY;
+				updateMarkerPosition(scene, markerDisplayX, markerDisplayY, 255);
+			}
+			return;
+		}
+	}
+
+	lastTransformApplyMs = nowApplyMs;
+	lastFollowAnchorX = anchorX;
+	lastFollowAnchorY = anchorY;
+	lastFollowAnchorValid = true;
+
 	const uint32_t topLeftAlign = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
-	for (const auto &state : sceneItems) {
+	for (auto &state : sceneItems) {
 		if (!state.item || !state.orig.valid)
 			continue;
 
-		if (obs_sceneitem_get_bounds_type(state.item) != OBS_BOUNDS_NONE)
-			obs_sceneitem_set_bounds_type(state.item, OBS_BOUNDS_NONE);
-		if (obs_sceneitem_get_alignment(state.item) != topLeftAlign)
-			obs_sceneitem_set_alignment(state.item, topLeftAlign);
+		if (!state.normalized) {
+			if (obs_sceneitem_get_bounds_type(state.item) != OBS_BOUNDS_NONE)
+				obs_sceneitem_set_bounds_type(state.item, OBS_BOUNDS_NONE);
+			if (obs_sceneitem_get_alignment(state.item) != topLeftAlign)
+				obs_sceneitem_set_alignment(state.item, topLeftAlign);
+			state.normalized = true;
+		}
 
 		vec2 sc{};
 		sc.x = state.orig.effectiveScale.x * (float)z;
 		sc.y = state.orig.effectiveScale.y * (float)z;
-		obs_sceneitem_set_scale(state.item, &sc);
 
 		vec2 pos{};
 		pos.x = (float)((double)anchorX +
 				((double)state.orig.effectivePos.x - (double)fx) * z + offsetX);
 		pos.y = (float)((double)anchorY +
 				((double)state.orig.effectivePos.y - (double)fy) * z + offsetY);
-		obs_sceneitem_set_pos(state.item, &pos);
+
+		if (!state.lastAppliedValid || !nearly_equal_vec2(state.lastAppliedScale, sc)) {
+			obs_sceneitem_set_scale(state.item, &sc);
+			state.lastAppliedScale = sc;
+		}
+
+		if (!state.lastAppliedValid || !nearly_equal_vec2(state.lastAppliedPos, pos)) {
+			obs_sceneitem_set_pos(state.item, &pos);
+			state.lastAppliedPos = pos;
+		}
+
+		state.lastAppliedValid = true;
 	}
 
 	if (scene) {
@@ -2000,17 +2328,24 @@ void ZoominatorController::applyZoomToScene(const std::vector<obs_sceneitem_t *>
 
 void ZoominatorController::onTick()
 {
-	std::vector<obs_sceneitem_t *> items;
-	enumerateTargetItemsInCurrentScene(items);
-	if (items.empty()) {
-		if (debug)
-			blog(LOG_WARNING, "[Zoominator] No movable scene items in current scene.");
-		ensureTicking(false);
-		resetState();
-		return;
-	}
+	const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+	if (lastTickMs <= 0)
+		tickDeltaSeconds = 1.0 / 60.0;
+	else
+		tickDeltaSeconds = clampd((double)(nowMs - lastTickMs) / 1000.0, 1.0 / 240.0, 1.0 / 20.0);
+	lastTickMs = nowMs;
 
 	if (!zoomActive) {
+		std::vector<obs_sceneitem_t *> items;
+		enumerateTargetItemsInCurrentScene(items);
+		if (items.empty()) {
+			if (debug)
+				blog(LOG_WARNING, "[Zoominator] No movable scene items in current scene.");
+			ensureTicking(false);
+			resetState();
+			return;
+		}
+
 		captureOriginalSceneItems(items);
 		zoomActive = !sceneItems.empty();
 		if (!zoomActive)
@@ -2018,8 +2353,7 @@ void ZoominatorController::onTick()
 	}
 
 	const int dur = (animDir >= 0) ? animInMs : animOutMs;
-	const double dt = tickTimer.interval() / (double)std::max(1, dur);
-	animT += (double)animDir * dt;
+	animT += (double)animDir * (tickDeltaSeconds * 1000.0) / (double)std::max(1, dur);
 
 	if (animT >= 1.0) {
 		animT = 1.0;
@@ -2032,14 +2366,18 @@ void ZoominatorController::onTick()
 	}
 
 	if (animT == 0.0 && animDir == 0) {
-		restoreOriginalSceneItems(items);
+		restoringRecovery = true;
+		restoreOriginalSceneItemsFromState();
+		restoringRecovery = false;
+		clearRecoveryActive();
 		ensureTicking(false);
 		resetState();
 		return;
 	}
 
-	applyZoomToScene(items, animT);
+	applyZoomToScene(animT);
 }
+
 
 static ZoominatorController *g_ctl = nullptr;
 
