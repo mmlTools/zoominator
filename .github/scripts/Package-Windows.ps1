@@ -34,14 +34,14 @@ function Copy-DirectoryContents {
         [string] $Destination
     )
 
-    if ( ! ( Test-Path -Path $Source -PathType Container ) ) {
+    if ( ! ( Test-Path -LiteralPath $Source ) ) {
         return
     }
 
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 
-    Get-ChildItem -Path $Source -Force | ForEach-Object {
-        Copy-Item -Path $_.FullName -Destination $Destination -Recurse -Force
+    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
     }
 }
 
@@ -51,6 +51,7 @@ function Package {
         exit 2
     }
 
+    $ScriptHome = $PSScriptRoot
     $ProjectRoot = Resolve-Path -Path "$PSScriptRoot/../.."
     $BuildSpecFile = "${ProjectRoot}/buildspec.json"
 
@@ -64,70 +65,123 @@ function Package {
     $BuildSpec = Get-Content -Path ${BuildSpecFile} -Raw | ConvertFrom-Json
     $ProductName = $BuildSpec.name
     $ProductVersion = $BuildSpec.version
+
     $OutputName = "${ProductName}-${ProductVersion}-windows-${Target}"
     $InstallRoot = Resolve-Path -Path "${ProjectRoot}/release/${Configuration}"
-    $PackageRoot = "${ProjectRoot}/release/windows-package/${OutputName}"
-    $PluginRoot = "${PackageRoot}/obs-plugins/64bit"
-    $DataRoot = "${PackageRoot}/data/obs-plugins/${ProductName}"
+    $StageRoot = "${ProjectRoot}/release/${OutputName}"
+    $PluginBinaryRoot = "${StageRoot}/obs-plugins/64bit"
+    $PluginDataRoot = "${StageRoot}/data/obs-plugins/${ProductName}"
 
-    Remove-Item -ErrorAction SilentlyContinue -Recurse -Force -Path @(
-        "${ProjectRoot}/release/${ProductName}-*-windows-*.zip",
-        "${ProjectRoot}/release/windows-package"
+    $RemoveArgs = @{
+        ErrorAction = 'SilentlyContinue'
+        Path = @(
+            "${ProjectRoot}/release/${ProductName}-*-windows-*.zip",
+            $StageRoot
+        )
+    }
+
+    Remove-Item @RemoveArgs -Recurse -Force
+
+    New-Item -ItemType Directory -Force -Path $PluginBinaryRoot | Out-Null
+    New-Item -ItemType Directory -Force -Path $PluginDataRoot | Out-Null
+
+    $DllCandidates = @(
+        "${InstallRoot}/obs-plugins/64bit/${ProductName}.dll",
+        "${InstallRoot}/obs-plugins/64bit/${ProductName}-plugin.dll",
+        "${InstallRoot}/bin/64bit/${ProductName}.dll",
+        "${InstallRoot}/bin/64bit/${ProductName}-plugin.dll",
+        "${InstallRoot}/${ProductName}.dll",
+        "${InstallRoot}/${ProductName}-plugin.dll"
     )
 
-    New-Item -ItemType Directory -Force -Path $PluginRoot | Out-Null
-    New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
+    $CopiedDll = $false
 
-    $ExistingPluginRoot = Join-Path -Path $InstallRoot -ChildPath 'obs-plugins/64bit'
-    if ( Test-Path -Path $ExistingPluginRoot -PathType Container ) {
-        Get-ChildItem -Path $ExistingPluginRoot -Filter '*.dll' -File | ForEach-Object {
-            Copy-Item -Path $_.FullName -Destination $PluginRoot -Force
+    foreach ( $Candidate in $DllCandidates ) {
+        if ( Test-Path -LiteralPath $Candidate ) {
+            Copy-Item -LiteralPath $Candidate -Destination $PluginBinaryRoot -Force
+            $CopiedDll = $true
         }
     }
 
-    $DirectDllCandidates = Get-ChildItem -Path $InstallRoot -Filter '*.dll' -File -Recurse | Where-Object {
-        $_.FullName -notlike "*\data\obs-plugins\*" -and
-        $_.FullName -notlike "*\windows-package\*" -and
-        $_.DirectoryName -ne $PluginRoot
+    if ( ! $CopiedDll ) {
+        $FoundDlls = Get-ChildItem -LiteralPath $InstallRoot -Recurse -File -Filter '*.dll' |
+            Where-Object {
+                $_.Name -eq "${ProductName}.dll" -or
+                $_.Name -eq "${ProductName}-plugin.dll" -or
+                $_.DirectoryName -match 'obs-plugins|bin\\64bit|bin/64bit'
+            }
+
+        foreach ( $Dll in $FoundDlls ) {
+            Copy-Item -LiteralPath $Dll.FullName -Destination $PluginBinaryRoot -Force
+            $CopiedDll = $true
+        }
     }
 
-    foreach ( $Dll in $DirectDllCandidates ) {
-        Copy-Item -Path $Dll.FullName -Destination $PluginRoot -Force
+    if ( ! $CopiedDll ) {
+        throw "Could not find the plugin DLL under ${InstallRoot}."
     }
 
-    if ( ! ( Get-ChildItem -Path $PluginRoot -Filter '*.dll' -File -ErrorAction SilentlyContinue ) ) {
-        throw "No Windows plugin DLLs were found under ${InstallRoot}."
+    $CopiedData = $false
+
+    $ExactDataCandidates = @(
+        "${InstallRoot}/data/obs-plugins/${ProductName}",
+        "${InstallRoot}/data/${ProductName}"
+    )
+
+    foreach ( $Candidate in $ExactDataCandidates ) {
+        if ( Test-Path -LiteralPath $Candidate ) {
+            Copy-DirectoryContents -Source $Candidate -Destination $PluginDataRoot
+            $CopiedData = $true
+            break
+        }
     }
 
-    $ExpectedDataRoot = Join-Path -Path $InstallRoot -ChildPath "data/obs-plugins/${ProductName}"
-    if ( Test-Path -Path $ExpectedDataRoot -PathType Container ) {
-        Copy-DirectoryContents -Source $ExpectedDataRoot -Destination $DataRoot
-    } else {
-        $AnyDataRoot = Join-Path -Path $InstallRoot -ChildPath 'data/obs-plugins'
-        if ( Test-Path -Path $AnyDataRoot -PathType Container ) {
-            $DataCandidates = @(Get-ChildItem -Path $AnyDataRoot -Directory)
-            if ( $DataCandidates.Count -eq 1 ) {
-                Copy-DirectoryContents -Source $DataCandidates[0].FullName -Destination $DataRoot
-            } elseif ( $DataCandidates.Count -gt 1 ) {
-                foreach ( $DataCandidate in $DataCandidates ) {
-                    Copy-DirectoryContents -Source $DataCandidate.FullName -Destination "${PackageRoot}/data/obs-plugins/$($DataCandidate.Name)"
-                }
+    if ( ! $CopiedData ) {
+        $ObsPluginsDataRoot = "${InstallRoot}/data/obs-plugins"
+        if ( Test-Path -LiteralPath $ObsPluginsDataRoot ) {
+            $DataFolders = Get-ChildItem -LiteralPath $ObsPluginsDataRoot -Directory -Force
+            if ( $DataFolders.Count -eq 1 ) {
+                Copy-DirectoryContents -Source $DataFolders[0].FullName -Destination $PluginDataRoot
+                $CopiedData = $true
+            } elseif ( Test-Path -LiteralPath "${ObsPluginsDataRoot}/${ProductName}" ) {
+                Copy-DirectoryContents -Source "${ObsPluginsDataRoot}/${ProductName}" -Destination $PluginDataRoot
+                $CopiedData = $true
             }
         }
     }
 
-    if ( ! ( Get-ChildItem -Path $DataRoot -Force -ErrorAction SilentlyContinue ) ) {
-        Remove-Item -Path $DataRoot -Force -Recurse -ErrorAction SilentlyContinue
+    if ( ! $CopiedData -and ( Test-Path -LiteralPath "${InstallRoot}/data" ) ) {
+        $TopLevelDataItems = Get-ChildItem -LiteralPath "${InstallRoot}/data" -Force |
+            Where-Object { $_.Name -ne 'obs-plugins' }
+
+        if ( $TopLevelDataItems.Count -gt 0 ) {
+            foreach ( $Item in $TopLevelDataItems ) {
+                Copy-Item -LiteralPath $Item.FullName -Destination $PluginDataRoot -Recurse -Force
+            }
+            $CopiedData = $true
+        }
+    }
+
+    if ( ! $CopiedData ) {
+        $KnownDataFolders = @('locale', 'locales', 'locale.ini', 'locales.ini', 'images', 'sounds')
+        foreach ( $Name in $KnownDataFolders ) {
+            $Matches = Get-ChildItem -LiteralPath $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -eq $Name }
+
+            foreach ( $Match in $Matches ) {
+                if ( $Match.PSIsContainer ) {
+                    Copy-Item -LiteralPath $Match.FullName -Destination $PluginDataRoot -Recurse -Force
+                } else {
+                    Copy-Item -LiteralPath $Match.FullName -Destination $PluginDataRoot -Force
+                }
+                $CopiedData = $true
+            }
+        }
     }
 
     Log-Group "Archiving ${ProductName}..."
-    $ArchivePaths = @(
-        "${PackageRoot}/obs-plugins",
-        "${PackageRoot}/data"
-    ) | Where-Object { Test-Path -Path $_ }
-
     $CompressArgs = @{
-        Path = $ArchivePaths
+        Path = (Get-ChildItem -LiteralPath $StageRoot)
         CompressionLevel = 'Optimal'
         DestinationPath = "${ProjectRoot}/release/${OutputName}.zip"
         Verbose = ($Env:CI -ne $null)

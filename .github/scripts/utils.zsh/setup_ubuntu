@@ -1,4 +1,4 @@
-autoload -Uz log_error log_status log_info mkcd
+autoload -Uz log_error log_status log_info log_group mkcd
 
 if (( ! ${+project_root} )) {
   log_error "'project_root' not set. Please set before running ${0}."
@@ -20,22 +20,6 @@ local -a apt_args=(
 )
 if (( _loglevel == 0 )) apt_args+=(--quiet)
 
-retry_command() {
-  local -i max_attempts=${1}
-  shift
-  local -i attempt=1
-
-  until "$@"; do
-    if (( attempt >= max_attempts )) {
-      return 1
-    }
-
-    log_info "Command failed. Retrying in 15 seconds (${attempt}/${max_attempts})..."
-    sleep 15
-    (( attempt++ ))
-  done
-}
-
 if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
   log_group 'Installing obs-studio build dependencies...'
 
@@ -48,38 +32,64 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
 
     suffix=":${arch_mappings[${target##*-}]}"
 
-    retry_command 3 sudo apt-get install ${apt_args} gcc-${${target##*-}//_/-}-linux-gnu g++-${${target##*-}//_/-}-linux-gnu
+    sudo apt-get install ${apt_args} gcc-${${target##*-}//_/-}-linux-gnu g++-${${target##*-}//_/-}-linux-gnu
   }
 
-  retry_command 3 sudo apt-get update
+  local apt_updated=0
 
-  retry_command 3 sudo apt-get install ${apt_args} \
-    software-properties-common \
+  for attempt in {1..3}; do
+    if sudo apt-get update; then
+      apt_updated=1
+      break
+    fi
+    sleep $(( attempt * 10 ))
+  done
+
+  if (( ! apt_updated )) {
+    log_error "apt-get update failed after retries."
+    return 2
+  }
+
+  local obs_package_available=0
+  if apt-cache show obs-studio >/dev/null 2>&1; then
+    obs_package_available=1
+  fi
+
+  if (( ! obs_package_available )) {
+    local ppa_added=0
+    for attempt in {1..3}; do
+      if sudo add-apt-repository --yes ppa:obsproject/obs-studio; then
+        ppa_added=1
+        break
+      fi
+      sleep $(( attempt * 15 ))
+    done
+
+    if (( ! ppa_added )) {
+      log_error "Could not add obsproject PPA after retries."
+      return 2
+    }
+
+    apt_updated=0
+    for attempt in {1..3}; do
+      if sudo apt-get update; then
+        apt_updated=1
+        break
+      fi
+      sleep $(( attempt * 10 ))
+    done
+
+    if (( ! apt_updated )) {
+      log_error "apt-get update failed after adding obsproject PPA."
+      return 2
+    }
+  }
+
+  sudo apt-get install ${apt_args} \
     build-essential \
-    ccache \
-    cmake \
-    ninja-build \
-    pkg-config \
-    libgl1-mesa-dev \
     libgles2-mesa-dev \
     libsimde-dev \
-    libx11-dev \
-    libxrandr-dev \
-    libxi-dev \
-    libxinerama-dev \
-    libxcursor-dev
-
-  if ! apt-cache show libobs-dev > /dev/null 2>&1; then
-    retry_command 3 sudo add-apt-repository --yes ppa:obsproject/obs-studio
-    retry_command 3 sudo apt-get update
-  fi
-
-  local -a obs_packages=(obs-studio)
-  if apt-cache show libobs-dev > /dev/null 2>&1; then
-    obs_packages+=(libobs-dev)
-  fi
-
-  retry_command 3 sudo apt-get install ${apt_args} ${obs_packages}
+    obs-studio
 
   local -a _qt_packages=()
 
@@ -98,6 +108,6 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
     )
   }
 
-  retry_command 3 sudo apt-get install ${apt_args} ${_qt_packages}
+  sudo apt-get install ${apt_args} ${_qt_packages}
   log_group
 }
