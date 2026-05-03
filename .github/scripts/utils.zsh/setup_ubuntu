@@ -20,6 +20,22 @@ local -a apt_args=(
 )
 if (( _loglevel == 0 )) apt_args+=(--quiet)
 
+retry_command() {
+  local -i max_attempts=${1}
+  shift
+  local -i attempt=1
+
+  until "$@"; do
+    if (( attempt >= max_attempts )) {
+      return 1
+    }
+
+    log_info "Command failed. Retrying in 15 seconds (${attempt}/${max_attempts})..."
+    sleep 15
+    (( attempt++ ))
+  done
+}
+
 if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
   log_group 'Installing obs-studio build dependencies...'
 
@@ -32,17 +48,38 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
 
     suffix=":${arch_mappings[${target##*-}]}"
 
-    sudo apt-get install ${apt_args} gcc-${${target##*-}//_/-}-linux-gnu g++-${${target##*-}//_/-}-linux-gnu
+    retry_command 3 sudo apt-get install ${apt_args} gcc-${${target##*-}//_/-}-linux-gnu g++-${${target##*-}//_/-}-linux-gnu
   }
 
-  sudo add-apt-repository --yes ppa:obsproject/obs-studio
-  sudo apt update
+  retry_command 3 sudo apt-get update
 
-  sudo apt-get install ${apt_args} \
+  retry_command 3 sudo apt-get install ${apt_args} \
+    software-properties-common \
     build-essential \
+    ccache \
+    cmake \
+    ninja-build \
+    pkg-config \
+    libgl1-mesa-dev \
     libgles2-mesa-dev \
     libsimde-dev \
-    obs-studio
+    libx11-dev \
+    libxrandr-dev \
+    libxi-dev \
+    libxinerama-dev \
+    libxcursor-dev
+
+  if ! apt-cache show libobs-dev > /dev/null 2>&1; then
+    retry_command 3 sudo add-apt-repository --yes ppa:obsproject/obs-studio
+    retry_command 3 sudo apt-get update
+  fi
+
+  local -a obs_packages=(obs-studio)
+  if apt-cache show libobs-dev > /dev/null 2>&1; then
+    obs_packages+=(libobs-dev)
+  fi
+
+  retry_command 3 sudo apt-get install ${apt_args} ${obs_packages}
 
   local -a _qt_packages=()
 
@@ -61,6 +98,6 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
     )
   }
 
-  sudo apt-get install ${apt_args} ${_qt_packages}
+  retry_command 3 sudo apt-get install ${apt_args} ${_qt_packages}
   log_group
 }

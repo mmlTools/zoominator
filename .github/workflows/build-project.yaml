@@ -203,13 +203,18 @@ jobs:
           echo "pluginName=${product_name}" >> $GITHUB_OUTPUT
           echo "pluginVersion=${product_version}" >> $GITHUB_OUTPUT
 
-      - name: Install Ubuntu build dependencies
+      - name: Install Ubuntu base dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          for i in 1 2 3; do
+            sudo apt-get update && break
+            sleep 15
+          done
+          sudo apt-get install -y --no-install-recommends \
             libx11-dev \
             libxrandr-dev \
-            libxi-dev
+            libxi-dev \
+            libxinerama-dev \
+            libxcursor-dev
 
       - uses: actions/cache/restore@v4
         id: ccache-cache
