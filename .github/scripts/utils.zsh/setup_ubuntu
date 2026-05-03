@@ -50,12 +50,12 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
     return 2
   }
 
-  local obs_package_available=0
-  if apt-cache show obs-studio >/dev/null 2>&1; then
-    obs_package_available=1
+  local obs_dev_package_available=0
+  if apt-cache show libobs-dev >/dev/null 2>&1; then
+    obs_dev_package_available=1
   fi
 
-  if (( ! obs_package_available )) {
+  if (( ! obs_dev_package_available )) {
     local ppa_added=0
     for attempt in {1..3}; do
       if sudo add-apt-repository --yes ppa:obsproject/obs-studio; then
@@ -89,7 +89,8 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
     build-essential \
     libgles2-mesa-dev \
     libsimde-dev \
-    obs-studio
+    obs-studio \
+    libobs-dev
 
   local -a _qt_packages=()
 

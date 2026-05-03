@@ -205,11 +205,29 @@ jobs:
 
       - name: Install Ubuntu build dependencies
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            sudo apt-get update && break
+            sleep $(( attempt * 10 ))
+          done
           sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            build-essential \
+            pkg-config \
             libx11-dev \
             libxrandr-dev \
-            libxi-dev
+            libxi-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libgl1-mesa-dev \
+            libgles2-mesa-dev \
+            libsimde-dev \
+            libobs-dev \
+            obs-studio \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            libqt6svg6-dev \
+            qt6-base-private-dev
 
       - uses: actions/cache/restore@v4
         id: ccache-cache
