@@ -91,6 +91,14 @@ static inline bool nearly_equal_vec2(const vec2 &a, const vec2 &b, float eps = 0
 	return nearly_equal(a.x, b.x, eps) && nearly_equal(a.y, b.y, eps);
 }
 
+/* Write-suppression threshold for scale. Position is in pixels, where the 0.01
+ * default is a sane "nothing changed" epsilon, but scale is a ratio: 0.01 there
+ * is 1% of the source, i.e. tens of pixels of rendered size. Sharing the pixel
+ * epsilon made a slow zoom accumulate scale silently for several frames and
+ * then apply it in one step, while position kept updating every frame. Small
+ * enough here that even an 8K source stays under a hundredth of a pixel. */
+static constexpr float kScaleEpsilon = 1.0e-5f;
+
 static inline void logi(bool enabled, const char *fmt, ...)
 {
 	if (!enabled)
@@ -2485,7 +2493,7 @@ void ZoominatorController::applyZoomToScene(double t)
 		pos.x = (float)((double)anchorX + ((double)state.orig.effectivePos.x - (double)fx) * z + offsetX);
 		pos.y = (float)((double)anchorY + ((double)state.orig.effectivePos.y - (double)fy) * z + offsetY);
 
-		if (!state.lastAppliedValid || !nearly_equal_vec2(state.lastAppliedScale, sc)) {
+		if (!state.lastAppliedValid || !nearly_equal_vec2(state.lastAppliedScale, sc, kScaleEpsilon)) {
 			obs_sceneitem_set_scale(state.item, &sc);
 			state.lastAppliedScale = sc;
 		}
