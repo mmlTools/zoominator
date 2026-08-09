@@ -2388,7 +2388,16 @@ void ZoominatorController::applyZoomToScene(double t)
 		}
 	} else {
 		if (!targetHasPos) {
-			if (followHasPos) {
+			if (!followMouse) {
+				/* Follow Mouse is off in settings, so the cursor should not
+				 * influence the zoom at all - not even by seeding the focal
+				 * point at trigger time. Zoom about the canvas centre.
+				 * The runtime toggle is deliberately left alone below: that
+				 * path freezes the zoom where the cursor last led it, which
+				 * is the point of toggling mid-zoom. */
+				targetX = (float)centerX;
+				targetY = (float)centerY;
+			} else if (followHasPos) {
 				targetX = followX;
 				targetY = followY;
 			} else if (mapped) {
