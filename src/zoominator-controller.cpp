@@ -91,6 +91,14 @@ static inline bool nearly_equal_vec2(const vec2 &a, const vec2 &b, float eps = 0
 	return nearly_equal(a.x, b.x, eps) && nearly_equal(a.y, b.y, eps);
 }
 
+/* Write-suppression threshold for scale. Position is in pixels, where the 0.01
+ * default is a sane "nothing changed" epsilon, but scale is a ratio: 0.01 there
+ * is 1% of the source, i.e. tens of pixels of rendered size. Sharing the pixel
+ * epsilon made a slow zoom accumulate scale silently for several frames and
+ * then apply it in one step, while position kept updating every frame. Small
+ * enough here that even an 8K source stays under a hundredth of a pixel. */
+static constexpr float kScaleEpsilon = 1.0e-5f;
+
 static inline void logi(bool enabled, const char *fmt, ...)
 {
 	if (!enabled)
@@ -2234,16 +2242,31 @@ void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
 		orig.effectiveScale.y = renderedH / visibleH;
 	}
 
-	orig.effectivePos = orig.pos;
+	/* libobs maps a scene item as
+	 *     p_scene = R(rot) * (S * p_local - origin) + pos
+	 * (update_item_transform, obs-scene.c), where origin is the alignment
+	 * offset inside the scaled item. The zoom re-anchors every item to
+	 * top-left alignment but deliberately leaves rot untouched, so the
+	 * alignment origin must be rotated before it is subtracted. Subtracting it
+	 * unrotated anchors a rotated source as if it were axis-aligned, which
+	 * swings it off the canvas. Reduces to the old expression when rot == 0. */
+	vec2 originOffset{};
 	if (orig.align & OBS_ALIGN_RIGHT)
-		orig.effectivePos.x -= renderedW;
+		originOffset.x = renderedW;
 	else if (!(orig.align & OBS_ALIGN_LEFT))
-		orig.effectivePos.x -= renderedW * 0.5f;
+		originOffset.x = renderedW * 0.5f;
 
 	if (orig.align & OBS_ALIGN_BOTTOM)
-		orig.effectivePos.y -= renderedH;
+		originOffset.y = renderedH;
 	else if (!(orig.align & OBS_ALIGN_TOP))
-		orig.effectivePos.y -= renderedH * 0.5f;
+		originOffset.y = renderedH * 0.5f;
+
+	float originSin = 0.0f;
+	float originCos = 1.0f;
+	rotation_sin_cos(orig.rot, originSin, originCos);
+
+	orig.effectivePos.x = orig.pos.x - (originOffset.x * originCos - originOffset.y * originSin);
+	orig.effectivePos.y = orig.pos.y - (originOffset.x * originSin + originOffset.y * originCos);
 
 	orig.valid = true;
 
@@ -2270,6 +2293,11 @@ void ZoominatorController::captureOriginalSceneItems(const std::vector<obs_scene
 	for (const auto &state : sceneItems) {
 		if (!state.item || !state.orig.valid)
 			continue;
+		/* Hidden items are still transformed (so they stay consistent if they
+		 * are switched on mid-zoom) but must not drive the framing bounds:
+		 * they show nothing, and scenes routinely park them far off-canvas. */
+		if (!obs_sceneitem_visible(state.item))
+			continue;
 		obs_source_t *src = obs_sceneitem_get_source(state.item);
 		if (!src)
 			continue;
@@ -2277,10 +2305,35 @@ void ZoominatorController::captureOriginalSceneItems(const std::vector<obs_scene
 		const float sh = (float)obs_source_get_height(src);
 		const float visibleW = std::max(1.0f, sw - (float)state.orig.crop.left - (float)state.orig.crop.right);
 		const float visibleH = std::max(1.0f, sh - (float)state.orig.crop.top - (float)state.orig.crop.bottom);
-		const float minX = state.orig.effectivePos.x;
-		const float minY = state.orig.effectivePos.y;
-		const float maxX = minX + visibleW * state.orig.effectiveScale.x;
-		const float maxY = minY + visibleH * state.orig.effectiveScale.y;
+		const float renderedW = visibleW * state.orig.effectiveScale.x;
+		const float renderedH = visibleH * state.orig.effectiveScale.y;
+
+		/* Axis-aligned bounds of the item as it actually appears, i.e. of the
+		 * rotated quad anchored at effectivePos. Treating a rotated item as an
+		 * upright renderedW x renderedH box puts these bounds somewhere the
+		 * source is not, and the framing clamp below then pushes the real
+		 * source off-canvas by exactly that error. */
+		float boundsSin = 0.0f;
+		float boundsCos = 1.0f;
+		rotation_sin_cos(state.orig.rot, boundsSin, boundsCos);
+
+		const float cornerX[4] = {0.0f, renderedW, 0.0f, renderedW};
+		const float cornerY[4] = {0.0f, 0.0f, renderedH, renderedH};
+
+		float minX = state.orig.effectivePos.x;
+		float minY = state.orig.effectivePos.y;
+		float maxX = minX;
+		float maxY = minY;
+		for (int corner = 0; corner < 4; ++corner) {
+			const float px =
+				state.orig.effectivePos.x + cornerX[corner] * boundsCos - cornerY[corner] * boundsSin;
+			const float py =
+				state.orig.effectivePos.y + cornerX[corner] * boundsSin + cornerY[corner] * boundsCos;
+			minX = std::min(minX, px);
+			maxX = std::max(maxX, px);
+			minY = std::min(minY, py);
+			maxY = std::max(maxY, py);
+		}
 
 		if (!sceneContentBoundsValid) {
 			sceneContentMin.x = minX;
@@ -2442,7 +2495,15 @@ void ZoominatorController::applyZoomToScene(double t)
 		}
 	} else {
 		if (!targetHasPos) {
-			if (followHasPos) {
+			if (!followMouse) {
+				/* Follow Mouse is off in settings, so the cursor should not
+				 * influence the zoom at all - not even by seeding the focal
+				 * point at trigger time. Zoom about the canvas centre.
+				 * The runtime toggle is deliberately left alone below: that
+				 * path freezes the zoom where the cursor last led it, which
+				 * is the point of toggling mid-zoom. */
+				targetX = (float)centerX;
+				targetY = (float)centerY;
 			} else if (followHasPos) {
 				targetX = followX;
 				targetY = followY;
@@ -2537,7 +2598,7 @@ void ZoominatorController::applyZoomToScene(double t)
 		pos.x = (float)((double)anchorX + ((double)state.orig.effectivePos.x - (double)fx) * z + offsetX);
 		pos.y = (float)((double)anchorY + ((double)state.orig.effectivePos.y - (double)fy) * z + offsetY);
 
-		if (!state.lastAppliedValid || !nearly_equal_vec2(state.lastAppliedScale, sc)) {
+		if (!state.lastAppliedValid || !nearly_equal_vec2(state.lastAppliedScale, sc, kScaleEpsilon)) {
 			obs_sceneitem_set_scale(state.item, &sc);
 			state.lastAppliedScale = sc;
 		}
