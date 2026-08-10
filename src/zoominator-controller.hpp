@@ -12,6 +12,8 @@
 #include <QElapsedTimer>
 #include <QString>
 #include <QHash>
+#include <atomic>
+#include <mutex>
 #include <vector>
 
 #ifdef _WIN32
@@ -135,13 +137,46 @@ private:
 	int currentMarkerOpacity(qint64 nowMs);
 	void applyZoomToScene(double t);
 
+	/* Split loop. Frame-critical work runs on OBS's graphics thread via
+	 * obs_add_tick_callback so the transform lands exactly once per rendered
+	 * frame, at whatever output fps is configured - a free-running Qt timer
+	 * beats against the render clock and drops or doubles updates.
+	 *
+	 * Qt GUI calls (QCursor::pos, QGuiApplication::screens) and the whole
+	 * obs_frontend_* API are main-thread only, and saveSettings() does blocking
+	 * file IO, so all of that stays on the Qt timer, which publishes an
+	 * InputSnapshot for the graphics thread to consume. */
+	static void videoTickCallback(void *param, float seconds);
+	void videoTick(double seconds);
+	void finishZoomOnMainThread();
+
+	struct InputSnapshot {
+		bool mapped = false;
+		bool inside = false;
+		float sceneX = 0.0f;
+		float sceneY = 0.0f;
+		obs_source_t *sceneRef = nullptr; /* strong ref owned by the snapshot */
+	};
+
+	std::mutex inputMutex; /* guards `input` and the pendingMarker* placement */
+	InputSnapshot input;
+	bool pendingMarkerVisible = false;
+	double pendingMarkerX = 0.0;
+	double pendingMarkerY = 0.0;
+	bool tickCallbackAdded = false;
+	std::atomic<bool> tickingWanted{false};
+	std::atomic<bool> pendingFinish{false};
+
 	QTimer tickTimer;
 	bool zoomPressed = false;
 	bool zoomLatched = false;
-	bool zoomActive = false;
+	/* Release-stored by the main thread once capture completes, acquire-loaded
+	 * by the graphics thread; that ordering is what makes sceneItems safe to
+	 * read there without holding a lock across the transform writes. */
+	std::atomic<bool> zoomActive{false};
 
 	double animT = 0.0;
-	int animDir = 0;
+	std::atomic<int> animDir{0};
 
 	bool followHasPos = false;
 	float followX = 0.0f;
