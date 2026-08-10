@@ -67,7 +67,7 @@ It operates at the **scene level**, meaning it works with any source automatical
 
 ### Steps
 ```bash
-git clone https://github.com/your-repo/zoominator.git
+git clone https://github.com/mmlTools/zoominator.git
 cd zoominator
 mkdir build && cd build
 cmake ..
