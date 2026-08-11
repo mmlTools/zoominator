@@ -91,6 +91,22 @@ static inline bool nearly_equal_vec2(const vec2 &a, const vec2 &b, float eps = 0
 	return nearly_equal(a.x, b.x, eps) && nearly_equal(a.y, b.y, eps);
 }
 
+/* Scene-item rotation, in the same sense libobs applies it (about +Z, degrees):
+ *   x' = x*cos - y*sin
+ *   y' = x*sin + y*cos
+ */
+static inline void rotation_sin_cos(float degrees, float &sinOut, float &cosOut)
+{
+	if (degrees == 0.0f) {
+		sinOut = 0.0f;
+		cosOut = 1.0f;
+		return;
+	}
+	const double rad = (double)degrees * 3.14159265358979323846 / 180.0;
+	sinOut = (float)std::sin(rad);
+	cosOut = (float)std::cos(rad);
+}
+
 /* Write-suppression threshold for scale. Position is in pixels, where the 0.01
  * default is a sane "nothing changed" epsilon, but scale is a ratio: 0.01 there
  * is 1% of the source, i.e. tens of pixels of rendered size. Sharing the pixel
