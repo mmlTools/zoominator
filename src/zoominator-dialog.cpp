@@ -37,6 +37,8 @@ void signal_handler_disconnect(struct signal_handler *handler, const char *signa
 #include <QVBoxLayout>
 #include <QString>
 
+#include <algorithm>
+
 namespace {
 
 static QString T(const char *key)
@@ -331,6 +333,30 @@ void ZoominatorDialog::buildUi()
 		spZoom->setDecimals(2);
 		spZoom->setToolTip(T("Dialog.ZoomFactorTooltip"));
 
+		spWheelZoomInStep = new QDoubleSpinBox(page);
+		spWheelZoomInStep->setRange(0.01, 2.0);
+		spWheelZoomInStep->setSingleStep(0.05);
+		spWheelZoomInStep->setDecimals(2);
+		spWheelZoomInStep->setSuffix(QStringLiteral("x"));
+
+		spWheelZoomOutStep = new QDoubleSpinBox(page);
+		spWheelZoomOutStep->setRange(0.01, 2.0);
+		spWheelZoomOutStep->setSingleStep(0.05);
+		spWheelZoomOutStep->setDecimals(2);
+		spWheelZoomOutStep->setSuffix(QStringLiteral("x"));
+
+		spWheelZoomMinimum = new QDoubleSpinBox(page);
+		spWheelZoomMinimum->setRange(1.0, 19.0);
+		spWheelZoomMinimum->setSingleStep(0.1);
+		spWheelZoomMinimum->setDecimals(1);
+		spWheelZoomMinimum->setSuffix(QStringLiteral("x"));
+
+		spWheelZoomMaximum = new QDoubleSpinBox(page);
+		spWheelZoomMaximum->setRange(1.1, 20.0);
+		spWheelZoomMaximum->setSingleStep(0.5);
+		spWheelZoomMaximum->setDecimals(1);
+		spWheelZoomMaximum->setSuffix(QStringLiteral("x"));
+
 		spIn = new QSpinBox(page);
 		spIn->setRange(0, 5000);
 		spIn->setSingleStep(10);
@@ -347,6 +373,15 @@ void ZoominatorDialog::buildUi()
 		zoomRow->addWidget(mkField(T("Dialog.AnimateIn"), spIn), 1);
 		zoomRow->addWidget(mkField(T("Dialog.AnimateOut"), spOut), 1);
 		lay->addLayout(zoomRow);
+		lay->addSpacing(12);
+
+		auto *wheelZoomRow = new QHBoxLayout;
+		wheelZoomRow->setSpacing(12);
+		wheelZoomRow->addWidget(mkField(T("Dialog.WheelZoomInStep"), spWheelZoomInStep), 1);
+		wheelZoomRow->addWidget(mkField(T("Dialog.WheelZoomOutStep"), spWheelZoomOutStep), 1);
+		wheelZoomRow->addWidget(mkField(T("Dialog.WheelZoomMinimum"), spWheelZoomMinimum), 1);
+		wheelZoomRow->addWidget(mkField(T("Dialog.WheelZoomMaximum"), spWheelZoomMaximum), 1);
+		lay->addLayout(wheelZoomRow);
 
 		addSection(lay, T("Dialog.Section.MouseFollow"));
 
@@ -653,6 +688,10 @@ void ZoominatorDialog::loadFromController()
 
 	{
 		spZoom->setValue(c.zoomFactor);
+		spWheelZoomInStep->setValue(c.wheelZoomInStep);
+		spWheelZoomOutStep->setValue(c.wheelZoomOutStep);
+		spWheelZoomMinimum->setValue(c.wheelZoomMinimum);
+		spWheelZoomMaximum->setValue(c.wheelZoomMaximum);
 		spIn->setValue(c.animInMs);
 		spOut->setValue(c.animOutMs);
 		chkFollow->setChecked(c.followMouse);
@@ -710,6 +749,10 @@ void ZoominatorDialog::applyToController()
 	c.hotkeySequence = triggerSequence.toString(QKeySequence::NativeText);
 
 	c.zoomFactor = spZoom->value();
+	c.wheelZoomInStep = spWheelZoomInStep->value();
+	c.wheelZoomOutStep = spWheelZoomOutStep->value();
+	c.wheelZoomMinimum = spWheelZoomMinimum->value();
+	c.wheelZoomMaximum = std::max(spWheelZoomMaximum->value(), c.wheelZoomMinimum + 0.1);
 	c.animInMs = spIn->value();
 	c.animOutMs = spOut->value();
 	c.followMouse = chkFollow->isChecked();
