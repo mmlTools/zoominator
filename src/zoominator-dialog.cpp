@@ -350,8 +350,11 @@ void ZoominatorDialog::buildUi()
 
 		addSection(lay, T("Dialog.Section.MouseFollow"));
 
-		chkFollow = new QCheckBox(T("Dialog.Enable"), page);
-		chkFollow->setToolTip(T("Dialog.FollowTooltip"));
+		cmbZoomAnchor = new QComboBox(page);
+		cmbZoomAnchor->addItem(T("Dialog.ZoomAnchor.Center"), "center");
+		cmbZoomAnchor->addItem(T("Dialog.ZoomAnchor.CursorStatic"), "cursor_static");
+		cmbZoomAnchor->addItem(T("Dialog.ZoomAnchor.CursorFollow"), "cursor_follow");
+		cmbZoomAnchor->setToolTip(T("Dialog.ZoomAnchorTooltip"));
 
 		spFollowSpeed = new QDoubleSpinBox(page);
 		spFollowSpeed->setRange(0.1, 40.0);
@@ -371,19 +374,22 @@ void ZoominatorDialog::buildUi()
 		auto *followRow = new QHBoxLayout;
 		followRow->setSpacing(12);
 
-		auto *followEnableW = new QWidget(page);
-		{
-			auto *v = new QVBoxLayout(followEnableW);
-			v->setContentsMargins(0, 0, 0, 0);
-			v->setSpacing(4);
-			v->addWidget(new QLabel(T("Dialog.FollowMouse"), followEnableW));
-			v->addWidget(chkFollow);
-		}
-		followRow->addWidget(followEnableW, 1);
+		followRow->addWidget(mkField(T("Dialog.ZoomAnchor"), cmbZoomAnchor), 1);
 		followRow->addWidget(mkField(T("Dialog.SmoothingSpeed"), spFollowSpeed), 1);
 		followRow->addWidget(mkField(T("Dialog.MouseIdleTimeout"), spMouseIdleTimeout), 1);
 		lay->addLayout(followRow);
 		lay->addWidget(chkCenterCursorUntilEdge);
+
+		/* Smoothing and the idle freeze only mean something while the anchor
+		 * actually tracks the cursor. */
+		auto syncFollowOnlyFields = [this]() {
+			const bool follows = (cmbZoomAnchor->currentData().toString() == "cursor_follow");
+			spFollowSpeed->setEnabled(follows);
+			spMouseIdleTimeout->setEnabled(follows);
+		};
+		connect(cmbZoomAnchor, &QComboBox::currentIndexChanged, this,
+			[syncFollowOnlyFields](int) { syncFollowOnlyFields(); });
+		syncFollowOnlyFields();
 
 		addSection(lay, T("Dialog.Section.Canvas"));
 
@@ -655,7 +661,9 @@ void ZoominatorDialog::loadFromController()
 		spZoom->setValue(c.zoomFactor);
 		spIn->setValue(c.animInMs);
 		spOut->setValue(c.animOutMs);
-		chkFollow->setChecked(c.followMouse);
+		const int anchorIdx =
+			cmbZoomAnchor->findData(ZoominatorController::zoomAnchorModeToString(c.zoomAnchor));
+		cmbZoomAnchor->setCurrentIndex(anchorIdx >= 0 ? anchorIdx : 2);
 		spFollowSpeed->setValue(c.followSpeed);
 		chkCenterCursorUntilEdge->setChecked(c.centerCursorUntilEdge);
 		spMouseIdleTimeout->setValue(c.mouseIdleTimeoutMs);
@@ -712,7 +720,7 @@ void ZoominatorDialog::applyToController()
 	c.zoomFactor = spZoom->value();
 	c.animInMs = spIn->value();
 	c.animOutMs = spOut->value();
-	c.followMouse = chkFollow->isChecked();
+	c.zoomAnchor = ZoominatorController::zoomAnchorModeFromString(cmbZoomAnchor->currentData().toString());
 	c.followSpeed = spFollowSpeed->value();
 	c.centerCursorUntilEdge = chkCenterCursorUntilEdge->isChecked();
 	c.mouseIdleTimeoutMs = spMouseIdleTimeout->value();
