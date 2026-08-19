@@ -17,7 +17,8 @@ It operates at the **scene level**, meaning it works with any source automatical
   Ensures the canvas is always fully covered no black edges, even with cropped sources.
 
 - **Mouse-Driven Focus**  
-  Keeps attention exactly where your cursor is.
+  Choose where the zoom is anchored: the canvas center, the cursor position at
+  trigger time (static), or the cursor position with continuous following.
 
 - **Ultrawide Edge Tracking**
   Optionally keeps the cursor centered until the captured scene reaches an edge.

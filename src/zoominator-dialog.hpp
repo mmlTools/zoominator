@@ -71,7 +71,7 @@ private:
 	QDoubleSpinBox *spWheelZoomMaximum = nullptr;
 	QSpinBox *spIn = nullptr;
 	QSpinBox *spOut = nullptr;
-	QCheckBox *chkFollow = nullptr;
+	QComboBox *cmbZoomAnchor = nullptr;
 	QDoubleSpinBox *spFollowSpeed = nullptr;
 	QCheckBox *chkCenterCursorUntilEdge = nullptr;
 	QSpinBox *spMouseIdleTimeout = nullptr;

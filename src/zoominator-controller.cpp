@@ -178,6 +178,28 @@ ZoominatorController &ZoominatorController::instance()
 	return inst;
 }
 
+QString ZoominatorController::zoomAnchorModeToString(ZoomAnchorMode mode)
+{
+	switch (mode) {
+	case ZoomAnchorMode::CanvasCenter:
+		return QStringLiteral("center");
+	case ZoomAnchorMode::CursorStatic:
+		return QStringLiteral("cursor_static");
+	case ZoomAnchorMode::CursorFollow:
+		break;
+	}
+	return QStringLiteral("cursor_follow");
+}
+
+ZoominatorController::ZoomAnchorMode ZoominatorController::zoomAnchorModeFromString(const QString &value)
+{
+	if (value == QLatin1String("center"))
+		return ZoomAnchorMode::CanvasCenter;
+	if (value == QLatin1String("cursor_static"))
+		return ZoomAnchorMode::CursorStatic;
+	return ZoomAnchorMode::CursorFollow;
+}
+
 ZoominatorController::ZoominatorController()
 {
 	tickTimer.setInterval(16);
@@ -748,8 +770,15 @@ void ZoominatorController::loadSettings()
 	if (animOutMs < 0)
 		animOutMs = 180;
 
-	if (obs_data_has_user_value(data, "follow_mouse"))
-		followMouse = obs_data_get_bool(data, "follow_mouse");
+	/* `zoom_anchor` supersedes the `follow_mouse` boolean. Configs written by
+	 * older builds only have the boolean, so migrate it: following stays
+	 * following, and "off" keeps its old meaning of zooming about the canvas
+	 * centre rather than silently switching to the new static-cursor mode. */
+	if (obs_data_has_user_value(data, "zoom_anchor"))
+		zoomAnchor = zoomAnchorModeFromString(getStr("zoom_anchor"));
+	else if (obs_data_has_user_value(data, "follow_mouse"))
+		zoomAnchor = obs_data_get_bool(data, "follow_mouse") ? ZoomAnchorMode::CursorFollow
+								    : ZoomAnchorMode::CanvasCenter;
 	followMouseRuntimeEnabled = true;
 	if (obs_data_has_user_value(data, "follow_speed"))
 		followSpeed = obs_data_get_double(data, "follow_speed");
@@ -846,7 +875,9 @@ void ZoominatorController::saveSettings()
 	obs_data_set_double(data, "wheel_zoom_maximum", wheelZoomMaximum);
 	obs_data_set_int(data, "anim_in_ms", animInMs);
 	obs_data_set_int(data, "anim_out_ms", animOutMs);
-	obs_data_set_bool(data, "follow_mouse", followMouse);
+	obs_data_set_string(data, "zoom_anchor", zoomAnchorModeToString(zoomAnchor).toUtf8().constData());
+	/* Kept so a downgrade to an older build still finds a setting it understands. */
+	obs_data_set_bool(data, "follow_mouse", zoomAnchor == ZoomAnchorMode::CursorFollow);
 	followMouseRuntimeEnabled = true;
 	obs_data_set_double(data, "follow_speed", followSpeed);
 	obs_data_set_bool(data, "center_cursor_until_edge", centerCursorUntilEdge);
@@ -2500,7 +2531,7 @@ void ZoominatorController::applyZoomToScene(double t)
 		}
 	}
 
-	if (followMouse && followMouseRuntimeEnabled && !mouseTrackingIdle) {
+	if (zoomAnchor == ZoomAnchorMode::CursorFollow && followMouseRuntimeEnabled && !mouseTrackingIdle) {
 		targetHasPos = false;
 		if (mapped) {
 			if (!followHasPos) {
@@ -2537,19 +2568,19 @@ void ZoominatorController::applyZoomToScene(double t)
 		}
 	} else {
 		if (!targetHasPos) {
-			if (!followMouse) {
-				/* Follow Mouse is off in settings, so the cursor should not
-				 * influence the zoom at all - not even by seeding the focal
-				 * point at trigger time. Zoom about the canvas centre.
-				 * The runtime toggle is deliberately left alone below: that
-				 * path freezes the zoom where the cursor last led it, which
-				 * is the point of toggling mid-zoom. */
+			if (zoomAnchor == ZoomAnchorMode::CanvasCenter) {
+				/* The cursor must not influence the zoom at all - not even
+				 * by seeding the focal point at trigger time. */
 				targetX = (float)centerX;
 				targetY = (float)centerY;
 			} else if (followHasPos) {
+				/* Follow mode frozen mid-zoom by the runtime toggle or the
+				 * idle timeout: hold the view where the cursor last led it. */
 				targetX = followX;
 				targetY = followY;
 			} else if (mapped) {
+				/* CursorStatic: anchor on wherever the cursor was when the
+				 * zoom was triggered, then stay put. */
 				targetX = mx;
 				targetY = my;
 			} else {
@@ -2599,8 +2630,9 @@ void ZoominatorController::applyZoomToScene(double t)
 	}
 
 	const qint64 nowApplyMs = nowMs;
-	const bool steadyFollow = followMouse && followMouseRuntimeEnabled && !mouseTrackingIdle &&
-				  animDir.load(std::memory_order_relaxed) == 0 && animT >= 0.999;
+	const bool steadyFollow = zoomAnchor == ZoomAnchorMode::CursorFollow && followMouseRuntimeEnabled &&
+				  !mouseTrackingIdle && animDir.load(std::memory_order_relaxed) == 0 &&
+				  animT >= 0.999;
 	if (steadyFollow) {
 		const float dx = anchorX - lastFollowAnchorX;
 		const float dy = anchorY - lastFollowAnchorY;
@@ -3578,6 +3610,15 @@ void ZoominatorController::onTriggerUp()
 
 void ZoominatorController::toggleFollowMouseRuntime()
 {
+	/* Only meaningful while the anchor actually tracks the cursor; in the other
+	 * modes the view is already static, so toggling would just reset the anchor. */
+	if (zoomAnchor != ZoomAnchorMode::CursorFollow) {
+		if (debug)
+			blog(LOG_INFO, "[Zoominator] Follow mouse toggle ignored (zoom anchor is %s)",
+			     zoomAnchorModeToString(zoomAnchor).toUtf8().constData());
+		return;
+	}
+
 	followMouseRuntimeEnabled = !followMouseRuntimeEnabled;
 	if (!followMouseRuntimeEnabled && followHasPos) {
 		targetX = followX;

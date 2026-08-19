@@ -34,6 +34,18 @@ class ZoominatorController final : public QObject {
 	Q_OBJECT
 
 public:
+	/* Where the zoom is anchored. Replaces the old `follow_mouse` boolean,
+	 * which could only express "canvas centre" or "track the cursor" and had
+	 * no way to say "start from the cursor, then hold still". */
+	enum class ZoomAnchorMode {
+		CanvasCenter,
+		CursorStatic,
+		CursorFollow,
+	};
+
+	static QString zoomAnchorModeToString(ZoomAnchorMode mode);
+	static ZoomAnchorMode zoomAnchorModeFromString(const QString &value);
+
 	static ZoominatorController &instance();
 
 	void initialize();
