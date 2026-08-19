@@ -32,6 +32,12 @@ It operates at the **scene level**, meaning it works with any source automatical
 - **Flexible Activation**  
   Toggle or hold behavior with customizable key combinations.
 
+- **X11 Wheel Zoom**
+  With Mouse X2 in toggle mode and no modifiers, hold the button and scroll to
+  change zoom. Release the button to keep the selected level, or click it
+  without scrolling to reset. The plugin consumes wheel events during the
+  gesture so the application below the pointer does not scroll.
+
 ---
 
 ## Installation
@@ -82,6 +88,8 @@ cmake --build . --config Release
 - **Windows:** Full support (global input + smooth tracking)
 - **macOS:** Requires Accessibility permissions for input tracking
 - **Linux (X11):** Supported via XInput2
+- **Linux wheel zoom:** X11 only. Zoom-in and zoom-out sensitivity, minimum and
+  maximum zoom, and animation durations are configurable in the Advanced tab.
 - **Wayland:** Native sessions are detected and X11 hooks are disabled. The
   Global Shortcuts portal can support hotkeys, but Wayland currently has no
   standard passive global cursor-position portal, so full mouse tracking still

@@ -65,6 +65,10 @@ private:
 	QCheckBox *chkRightWin = nullptr;
 
 	QDoubleSpinBox *spZoom = nullptr;
+	QDoubleSpinBox *spWheelZoomInStep = nullptr;
+	QDoubleSpinBox *spWheelZoomOutStep = nullptr;
+	QDoubleSpinBox *spWheelZoomMinimum = nullptr;
+	QDoubleSpinBox *spWheelZoomMaximum = nullptr;
 	QSpinBox *spIn = nullptr;
 	QSpinBox *spOut = nullptr;
 	QComboBox *cmbZoomAnchor = nullptr;

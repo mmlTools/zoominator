@@ -77,9 +77,13 @@ public:
 	bool modRightWin = false;
 
 	double zoomFactor = 2.0;
+	double wheelZoomInStep = 0.20;
+	double wheelZoomOutStep = 0.20;
+	double wheelZoomMinimum = 1.0;
+	double wheelZoomMaximum = 5.0;
 	int animInMs = 180;
-	int animOutMs = 180;
-	ZoomAnchorMode zoomAnchor = ZoomAnchorMode::CursorFollow;
+	int animOutMs = 320;
+	bool followMouse = true;
 	bool followMouseRuntimeEnabled = true;
 	double followSpeed = 8.0;
 	bool centerCursorUntilEdge = true;
@@ -119,6 +123,9 @@ private:
 	bool needsMouseHook() const;
 	void onTriggerDown();
 	void onTriggerUp();
+	void adjustActiveZoomFromWheel(int button);
+	bool usesLinuxWheelZoomGesture() const;
+	void finishLinuxWheelZoomGesture();
 	void toggleFollowMouseRuntime();
 	bool triggerMatchesKeyboard(int vk) const;
 	bool triggerMatchesMouse(unsigned int msg, unsigned short mouseData) const;
@@ -182,12 +189,15 @@ private:
 	QTimer tickTimer;
 	bool zoomPressed = false;
 	bool zoomLatched = false;
+	bool zoomAdjustButtonHeld = false;
+	bool zoomAdjustedDuringButtonHold = false;
 	/* Release-stored by the main thread once capture completes, acquire-loaded
 	 * by the graphics thread; that ordering is what makes sceneItems safe to
 	 * read there without holding a lock across the transform writes. */
 	std::atomic<bool> zoomActive{false};
 
 	double animT = 0.0;
+	double renderedZoomFactor = 1.0;
 	std::atomic<int> animDir{0};
 
 	bool followHasPos = false;
@@ -290,6 +300,7 @@ private:
 	_XDisplay *xiDisplay = nullptr;
 	int xiOpcode = 0;
 	QSocketNotifier *xiNotifier = nullptr;
+	bool linuxWheelZoomGrabInstalled = false;
 	void processXInput2Events();
 #endif
 };

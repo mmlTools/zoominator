@@ -114,6 +114,7 @@ static inline void rotation_sin_cos(float degrees, float &sinOut, float &cosOut)
  * then apply it in one step, while position kept updating every frame. Small
  * enough here that even an 8K source stays under a hundredth of a pixel. */
 static constexpr float kScaleEpsilon = 1.0e-5f;
+static constexpr double kWheelZoomSmoothingRate = 14.0;
 
 static inline void logi(bool enabled, const char *fmt, ...)
 {
@@ -595,9 +596,13 @@ void ZoominatorController::loadSettings()
 	modRightWin = false;
 
 	zoomFactor = 2.0;
+	wheelZoomInStep = 0.20;
+	wheelZoomOutStep = 0.20;
+	wheelZoomMinimum = 1.0;
+	wheelZoomMaximum = 5.0;
 	animInMs = 180;
-	animOutMs = 180;
-	zoomAnchor = ZoomAnchorMode::CursorFollow;
+	animOutMs = 320;
+	followMouse = true;
 	followMouseRuntimeEnabled = true;
 	followSpeed = 8.0;
 	centerCursorUntilEdge = true;
@@ -743,6 +748,18 @@ void ZoominatorController::loadSettings()
 
 	if (zoomFactor < 0.0)
 		zoomFactor = 0.0;
+	if (obs_data_has_user_value(data, "wheel_zoom_in_step"))
+		wheelZoomInStep = obs_data_get_double(data, "wheel_zoom_in_step");
+	if (obs_data_has_user_value(data, "wheel_zoom_out_step"))
+		wheelZoomOutStep = obs_data_get_double(data, "wheel_zoom_out_step");
+	if (obs_data_has_user_value(data, "wheel_zoom_minimum"))
+		wheelZoomMinimum = obs_data_get_double(data, "wheel_zoom_minimum");
+	if (obs_data_has_user_value(data, "wheel_zoom_maximum"))
+		wheelZoomMaximum = obs_data_get_double(data, "wheel_zoom_maximum");
+	wheelZoomInStep = clampd(wheelZoomInStep, 0.01, 2.0);
+	wheelZoomOutStep = clampd(wheelZoomOutStep, 0.01, 2.0);
+	wheelZoomMinimum = clampd(wheelZoomMinimum, 1.0, 19.0);
+	wheelZoomMaximum = clampd(wheelZoomMaximum, wheelZoomMinimum + 0.1, 20.0);
 
 	if (obs_data_has_user_value(data, "anim_in_ms"))
 		animInMs = (int)obs_data_get_int(data, "anim_in_ms");
@@ -852,6 +869,10 @@ void ZoominatorController::saveSettings()
 	obs_data_set_bool(data, "mod_right_win", modRightWin);
 
 	obs_data_set_double(data, "zoom_factor", zoomFactor);
+	obs_data_set_double(data, "wheel_zoom_in_step", wheelZoomInStep);
+	obs_data_set_double(data, "wheel_zoom_out_step", wheelZoomOutStep);
+	obs_data_set_double(data, "wheel_zoom_minimum", wheelZoomMinimum);
+	obs_data_set_double(data, "wheel_zoom_maximum", wheelZoomMaximum);
 	obs_data_set_int(data, "anim_in_ms", animInMs);
 	obs_data_set_int(data, "anim_out_ms", animOutMs);
 	obs_data_set_string(data, "zoom_anchor", zoomAnchorModeToString(zoomAnchor).toUtf8().constData());
@@ -942,6 +963,7 @@ void ZoominatorController::resetState()
 	tickingWanted.store(false, std::memory_order_release);
 	pendingFinish.store(false, std::memory_order_release);
 	animT = 0.0;
+	renderedZoomFactor = 1.0;
 	animDir.store(0, std::memory_order_relaxed);
 	followHasPos = false;
 	lastCursorSampleValid = false;
@@ -2469,7 +2491,7 @@ void ZoominatorController::applyZoomToScene(double t)
 	};
 
 	const double tt = smoothstep(clampd(t, 0.0, 1.0));
-	const double zTarget = (zoomFactor <= 1.0) ? 1.0 : zoomFactor;
+	const double zTarget = (renderedZoomFactor <= 1.0) ? 1.0 : renderedZoomFactor;
 	const double z = 1.0 + (zTarget - 1.0) * tt;
 
 	obs_video_info ovi{};
@@ -2532,13 +2554,17 @@ void ZoominatorController::applyZoomToScene(double t)
 			}
 			fx = followX;
 			fy = followY;
-			anchorX = (float)centerX;
-			anchorY = (float)centerY;
+			/* Scale around the tracked pointer itself. Anchoring at the canvas
+			 * centre makes the first zoom frame pull content sideways before
+			 * follow tracking catches up, especially when the pointer starts
+			 * near an edge. */
+			anchorX = followX;
+			anchorY = followY;
 		} else if (followHasPos) {
 			fx = followX;
 			fy = followY;
-			anchorX = (float)centerX;
-			anchorY = (float)centerY;
+			anchorX = followX;
+			anchorY = followY;
 		}
 	} else {
 		if (!targetHasPos) {
@@ -2772,6 +2798,16 @@ void ZoominatorController::videoTick(double seconds)
 	tickDeltaSeconds = clampd(seconds, 1.0 / 480.0, 1.0 / 20.0);
 
 	const int dir = animDir.load(std::memory_order_relaxed);
+	/* Wheel notches change the target immediately, but the rendered scale
+	 * approaches it exponentially. This keeps consecutive notches fluid and
+	 * remains frame-rate independent. The normal zoom-out animation owns the
+	 * path back to 1x, so do not also shrink the target during that animation. */
+	if (dir >= 0 && zoomFactor > 1.0) {
+		const double response = 1.0 - std::exp(-kWheelZoomSmoothingRate * tickDeltaSeconds);
+		renderedZoomFactor += (zoomFactor - renderedZoomFactor) * response;
+		if (std::fabs(zoomFactor - renderedZoomFactor) < 0.0001)
+			renderedZoomFactor = zoomFactor;
+	}
 	const int dur = (dir >= 0) ? animInMs : animOutMs;
 	animT += (double)dir * (tickDeltaSeconds * 1000.0) / (double)std::max(1, dur);
 
@@ -3331,6 +3367,52 @@ static bool linux_button_matches(int button, const QString &want)
 	return false;
 }
 
+bool ZoominatorController::usesLinuxWheelZoomGesture() const
+{
+	return triggerType == "mouse" && mouseButton == "x2" && hotkeyMode == "toggle" && !modCtrl && !modAlt &&
+	       !modShift && !modWin && !modLeftCtrl && !modRightCtrl && !modLeftAlt && !modRightAlt &&
+	       !modLeftShift && !modRightShift && !modLeftWin && !modRightWin;
+}
+
+void ZoominatorController::adjustActiveZoomFromWheel(int button)
+{
+	if (!zoomAdjustButtonHeld)
+		return;
+	if (button != 4 && button != 5)
+		return;
+
+	const bool wasActive = zoomActive.load(std::memory_order_acquire);
+	const double delta = button == 4 ? wheelZoomInStep : -wheelZoomOutStep;
+	zoomFactor = clampd(zoomFactor + delta, wheelZoomMinimum, wheelZoomMaximum);
+	zoomAdjustedDuringButtonHold = true;
+	if (zoomFactor > 1.0) {
+		if (!wasActive) {
+			/* The existing entrance animation supplies the first transition.
+			 * Later wheel notches use renderedZoomFactor's smoothing above. */
+			renderedZoomFactor = zoomFactor;
+			startZoomIn();
+		}
+	} else {
+		zoomLatched = false;
+		startZoomOut();
+	}
+	scheduleSettingsSave();
+	emit settingsChanged();
+}
+
+void ZoominatorController::finishLinuxWheelZoomGesture()
+{
+	zoomAdjustButtonHeld = false;
+	if (zoomAdjustedDuringButtonHold)
+		return;
+
+	zoomFactor = 1.0;
+	zoomLatched = false;
+	startZoomOut();
+	scheduleSettingsSave();
+	emit settingsChanged();
+}
+
 void ZoominatorController::processXInput2Events()
 {
 	if (!xiDisplay)
@@ -3339,6 +3421,23 @@ void ZoominatorController::processXInput2Events()
 	while (XPending(xiDisplay)) {
 		XEvent ev;
 		XNextEvent(xiDisplay, &ev);
+
+		if (linuxWheelZoomGrabInstalled && (ev.type == ButtonPress || ev.type == ButtonRelease)) {
+			const int button = ev.xbutton.button;
+			const bool down = ev.type == ButtonPress;
+			if (button == 9) {
+				if (down) {
+					zoomAdjustButtonHeld = true;
+					zoomAdjustedDuringButtonHold = false;
+					captureMarkerClickPosition();
+				} else {
+					finishLinuxWheelZoomGesture();
+				}
+			} else if (down && (button == 4 || button == 5)) {
+				adjustActiveZoomFromWheel(button);
+			}
+			continue;
+		}
 
 		if (ev.xcookie.type != GenericEvent || ev.xcookie.extension != xiOpcode)
 			continue;
@@ -3400,6 +3499,14 @@ void ZoominatorController::processXInput2Events()
 			const bool down = (evtype == XI_RawButtonPress);
 			const bool up = (evtype == XI_RawButtonRelease);
 
+			/* The passive X11 grab below supplies these as ordinary button
+			 * events while Mouse5 is held. Ignoring their raw copies prevents
+			 * a wheel notch from being applied twice or without Mouse5. */
+			if (linuxWheelZoomGrabInstalled && (button == 4 || button == 5 || button == 9)) {
+				XFreeEventData(xiDisplay, &ev.xcookie);
+				continue;
+			}
+
 			if (down)
 				captureMarkerClickPosition();
 
@@ -3417,6 +3524,7 @@ void ZoominatorController::processXInput2Events()
 							if (down)
 								onTriggerDown();
 						} else {
+							zoomAdjustButtonHeld = down;
 							if (down)
 								onTriggerDown();
 							if (up)
@@ -4095,6 +4203,19 @@ void ZoominatorController::installHooks()
 			XISetMask(mask_bits, XI_RawButtonRelease);
 		}
 		XISelectEvents(xiDisplay, DefaultRootWindow(xiDisplay), &evmask, 1);
+
+		if (usesLinuxWheelZoomGesture()) {
+			/* A passive grab becomes active only while Mouse5 is held. During
+			 * that short interval wheel events come exclusively to this plugin,
+			 * so the application below the cursor does not scroll. X11 releases
+			 * the grab on Mouse5 release or if this display connection closes. */
+			XGrabButton(xiDisplay, 9, AnyModifier, DefaultRootWindow(xiDisplay), False,
+				    ButtonPressMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync,
+				    (Window)X11_None, (Cursor)X11_None);
+			XSync(xiDisplay, False);
+			linuxWheelZoomGrabInstalled = true;
+			blog(LOG_INFO, "[Zoominator] Mouse5 + wheel zoom grab installed.");
+		}
 		XFlush(xiDisplay);
 
 		int fd = ConnectionNumber(xiDisplay);
@@ -4136,9 +4257,17 @@ void ZoominatorController::uninstallHooks()
 		xiNotifier = nullptr;
 	}
 	if (xiDisplay) {
+		if (linuxWheelZoomGrabInstalled) {
+			XUngrabButton(xiDisplay, 9, AnyModifier, DefaultRootWindow(xiDisplay));
+			XUngrabPointer(xiDisplay, CurrentTime);
+			XSync(xiDisplay, False);
+			linuxWheelZoomGrabInstalled = false;
+		}
 		XCloseDisplay(xiDisplay);
 		xiDisplay = nullptr;
 	}
+	zoomAdjustButtonHeld = false;
+	zoomAdjustedDuringButtonHold = false;
 	g_ctl = nullptr;
 #endif
 }
