@@ -2706,8 +2706,38 @@ void ZoominatorController::onTick()
 		return;
 	}
 
-	if (!tickingWanted.load(std::memory_order_acquire))
+	const bool zoomTickWanted = tickingWanted.load(std::memory_order_acquire);
+	if (!zoomTickWanted && !markerClickHasPos) {
+		ensureTicking(false);
 		return;
+	}
+
+	/* A click halo has its own short lifetime and must keep rendering even when
+	 * no zoom animation is active. Its captured position is already in canvas
+	 * coordinates, so this path can display and fade it entirely on the main
+	 * thread without starting or mutating zoom state. */
+	if (!zoomTickWanted) {
+		const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+		obs_source_t *sceneSource = obs_frontend_get_current_scene();
+		if (obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr) {
+			const int opacity = currentMarkerOpacity(nowMs);
+			if (showCursorMarker && opacity > 0)
+				updateMarkerPosition(scene, markerClickX, markerClickY, opacity);
+			else
+				hideMarkerInScene(scene);
+		}
+		if (sceneSource)
+			obs_source_release(sceneSource);
+
+		if (!isMarkerFlashActive(nowMs)) {
+			markerClickHasPos = false;
+			markerClickFlashStartMs = 0;
+			markerClickFlashHoldUntilMs = 0;
+			markerClickFlashFadeOutEndMs = 0;
+			ensureTicking(false);
+		}
+		return;
+	}
 
 	if (!zoomActive.load(std::memory_order_acquire)) {
 		std::vector<obs_sceneitem_t *> items;
