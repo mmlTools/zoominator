@@ -1,1 +1,5 @@
-.run-format.zsh
+#!/usr/bin/env zsh
+
+typeset -g FORMATTER_NAME=swift
+typeset -g SCRIPT_HOME=${0:A:h}
+source "${SCRIPT_HOME}/.run-format.zsh" "$@"

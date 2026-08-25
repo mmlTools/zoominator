@@ -602,7 +602,7 @@ void ZoominatorController::loadSettings()
 	wheelZoomMaximum = 5.0;
 	animInMs = 180;
 	animOutMs = 320;
-	followMouse = true;
+	zoomAnchor = ZoomAnchorMode::CursorFollow;
 	followMouseRuntimeEnabled = true;
 	followSpeed = 8.0;
 	centerCursorUntilEdge = true;

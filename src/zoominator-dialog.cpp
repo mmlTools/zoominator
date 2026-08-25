@@ -195,6 +195,15 @@ void ZoominatorDialog::buildUi()
 		lay->addWidget(mkField(T("Dialog.FollowToggleHotkey"), followHkRow));
 
 		lay->addStretch(1);
+		lay->addSpacing(16);
+
+		auto *supportLabel = new QLabel(T("Dialog.SupportMessage"), page);
+		supportLabel->setTextFormat(Qt::RichText);
+		supportLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
+		supportLabel->setOpenExternalLinks(true);
+		supportLabel->setWordWrap(true);
+		lay->addWidget(supportLabel);
+
 		tabWidget->addTab(page, T("Dialog.Tab.Target"));
 	}
 

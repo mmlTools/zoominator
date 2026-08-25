@@ -83,7 +83,7 @@ public:
 	double wheelZoomMaximum = 5.0;
 	int animInMs = 180;
 	int animOutMs = 320;
-	bool followMouse = true;
+	ZoomAnchorMode zoomAnchor = ZoomAnchorMode::CursorFollow;
 	bool followMouseRuntimeEnabled = true;
 	double followSpeed = 8.0;
 	bool centerCursorUntilEdge = true;
