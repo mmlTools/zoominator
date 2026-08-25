@@ -81,31 +81,6 @@ static void frontend_event_cb(enum obs_frontend_event, void *data)
 	QMetaObject::invokeMethod(dlg, "refreshLists", Qt::QueuedConnection);
 }
 
-static QKeySequence sequence_without_modifiers(const QKeySequence &seq)
-{
-	if (seq.isEmpty())
-		return {};
-	const QKeyCombination kc = seq[0];
-	if (kc.key() == Qt::Key_unknown)
-		return {};
-	return QKeySequence(QKeyCombination(Qt::NoModifier, kc.key()));
-}
-
-static bool key_sequence_is_modifier_only(const QKeySequence &seq)
-{
-	if (seq.isEmpty())
-		return false;
-	switch (seq[0].key()) {
-	case Qt::Key_Control:
-	case Qt::Key_Shift:
-	case Qt::Key_Alt:
-	case Qt::Key_Meta:
-		return true;
-	default:
-		return false;
-	}
-}
-
 static QString friendlySourceKind(const QString &kind)
 {
 	if (kind == "image_source")
@@ -748,13 +723,7 @@ void ZoominatorDialog::applyToController()
 	c.modRightShift = chkRightShift->isChecked();
 	c.modRightWin = chkRightWin->isChecked();
 
-	QKeySequence triggerSequence = editHotkey->keySequence();
-	if (!key_sequence_is_modifier_only(triggerSequence) &&
-	    (c.modCtrl || c.modAlt || c.modShift || c.modWin || c.modLeftCtrl || c.modRightCtrl || c.modLeftAlt ||
-	     c.modRightAlt || c.modLeftShift || c.modRightShift || c.modLeftWin || c.modRightWin)) {
-		triggerSequence = sequence_without_modifiers(triggerSequence);
-	}
-	c.hotkeySequence = triggerSequence.toString(QKeySequence::NativeText);
+	c.hotkeySequence = editHotkey->keySequence().toString(QKeySequence::NativeText);
 
 	c.zoomFactor = spZoom->value();
 	c.wheelZoomInStep = spWheelZoomInStep->value();
