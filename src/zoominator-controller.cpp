@@ -778,7 +778,7 @@ void ZoominatorController::loadSettings()
 		zoomAnchor = zoomAnchorModeFromString(getStr("zoom_anchor"));
 	else if (obs_data_has_user_value(data, "follow_mouse"))
 		zoomAnchor = obs_data_get_bool(data, "follow_mouse") ? ZoomAnchorMode::CursorFollow
-								    : ZoomAnchorMode::CanvasCenter;
+								     : ZoomAnchorMode::CanvasCenter;
 	followMouseRuntimeEnabled = true;
 	if (obs_data_has_user_value(data, "follow_speed"))
 		followSpeed = obs_data_get_double(data, "follow_speed");
@@ -2631,8 +2631,7 @@ void ZoominatorController::applyZoomToScene(double t)
 
 	const qint64 nowApplyMs = nowMs;
 	const bool steadyFollow = zoomAnchor == ZoomAnchorMode::CursorFollow && followMouseRuntimeEnabled &&
-				  !mouseTrackingIdle && animDir.load(std::memory_order_relaxed) == 0 &&
-				  animT >= 0.999;
+				  !mouseTrackingIdle && animDir.load(std::memory_order_relaxed) == 0 && animT >= 0.999;
 	if (steadyFollow) {
 		const float dx = anchorX - lastFollowAnchorX;
 		const float dy = anchorY - lastFollowAnchorY;
@@ -3370,8 +3369,8 @@ static bool linux_button_matches(int button, const QString &want)
 bool ZoominatorController::usesLinuxWheelZoomGesture() const
 {
 	return triggerType == "mouse" && mouseButton == "x2" && hotkeyMode == "toggle" && !modCtrl && !modAlt &&
-	       !modShift && !modWin && !modLeftCtrl && !modRightCtrl && !modLeftAlt && !modRightAlt &&
-	       !modLeftShift && !modRightShift && !modLeftWin && !modRightWin;
+	       !modShift && !modWin && !modLeftCtrl && !modRightCtrl && !modLeftAlt && !modRightAlt && !modLeftShift &&
+	       !modRightShift && !modLeftWin && !modRightWin;
 }
 
 void ZoominatorController::adjustActiveZoomFromWheel(int button)
@@ -4210,8 +4209,8 @@ void ZoominatorController::installHooks()
 			 * so the application below the cursor does not scroll. X11 releases
 			 * the grab on Mouse5 release or if this display connection closes. */
 			XGrabButton(xiDisplay, 9, AnyModifier, DefaultRootWindow(xiDisplay), False,
-				    ButtonPressMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync,
-				    (Window)X11_None, (Cursor)X11_None);
+				    ButtonPressMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync, (Window)X11_None,
+				    (Cursor)X11_None);
 			XSync(xiDisplay, False);
 			linuxWheelZoomGrabInstalled = true;
 			blog(LOG_INFO, "[Zoominator] Mouse5 + wheel zoom grab installed.");
