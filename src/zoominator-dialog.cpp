@@ -420,10 +420,13 @@ void ZoominatorDialog::buildUi()
 
 		chkShowCursorMarker = new QCheckBox(T("Dialog.ShowCursorHalo"), page);
 		chkShowCursorMarker->setToolTip(T("Dialog.ShowCursorHaloTooltip"));
+		chkShowMarkerWhenNotZoomed = new QCheckBox(T("Dialog.ShowHaloWhenNotZoomed"), page);
+		chkShowMarkerWhenNotZoomed->setToolTip(T("Dialog.ShowHaloWhenNotZoomedTooltip"));
 
 		auto *haloFlagsRow = new QHBoxLayout;
 		haloFlagsRow->setSpacing(20);
 		haloFlagsRow->addWidget(chkShowCursorMarker);
+		haloFlagsRow->addWidget(chkShowMarkerWhenNotZoomed);
 		haloFlagsRow->addStretch(1);
 		lay->addLayout(haloFlagsRow);
 		lay->addSpacing(10);
@@ -499,6 +502,7 @@ void ZoominatorDialog::buildUi()
 	connect(btnClearHotkey, &QPushButton::clicked, this, &ZoominatorDialog::clearHotkey);
 	connect(btnClearFollowToggleHotkey, &QPushButton::clicked, this, &ZoominatorDialog::clearFollowToggleHotkey);
 	connect(btnMarkerColor, &QPushButton::clicked, this, &ZoominatorDialog::chooseMarkerColor);
+	connect(chkShowCursorMarker, &QCheckBox::toggled, chkShowMarkerWhenNotZoomed, &QWidget::setEnabled);
 }
 
 void ZoominatorDialog::populateSourcesTab()
@@ -692,6 +696,8 @@ void ZoominatorDialog::loadFromController()
 		spMouseIdleTimeout->setValue(c.mouseIdleTimeoutMs);
 		chkPortraitCover->setChecked(c.portraitCover);
 		chkShowCursorMarker->setChecked(c.showCursorMarker);
+		chkShowMarkerWhenNotZoomed->setChecked(c.showMarkerWhenNotZoomed);
+		chkShowMarkerWhenNotZoomed->setEnabled(c.showCursorMarker);
 		spMarkerSize->setValue(c.markerSize);
 		spMarkerThickness->setValue(c.markerThickness);
 		updateMarkerColorButton(QColor::fromRgba(c.markerColor));
@@ -747,6 +753,7 @@ void ZoominatorDialog::applyToController()
 	c.mouseIdleTimeoutMs = spMouseIdleTimeout->value();
 	c.portraitCover = chkPortraitCover->isChecked();
 	c.showCursorMarker = chkShowCursorMarker->isChecked();
+	c.showMarkerWhenNotZoomed = chkShowMarkerWhenNotZoomed->isChecked();
 	c.markerOnlyOnClick = true;
 	c.markerSize = spMarkerSize->value();
 	c.markerThickness = spMarkerThickness->value();

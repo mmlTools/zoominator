@@ -609,6 +609,7 @@ void ZoominatorController::loadSettings()
 	mouseIdleTimeoutMs = 0;
 	portraitCover = true;
 	showCursorMarker = false;
+	showMarkerWhenNotZoomed = false;
 	markerOnlyOnClick = true;
 	markerColor = 0xFFFF0000;
 	markerSize = 26;
@@ -794,6 +795,8 @@ void ZoominatorController::loadSettings()
 		portraitCover = obs_data_get_bool(data, "portrait_cover");
 	if (obs_data_has_user_value(data, "show_cursor_marker"))
 		showCursorMarker = obs_data_get_bool(data, "show_cursor_marker");
+	if (obs_data_has_user_value(data, "show_marker_when_not_zoomed"))
+		showMarkerWhenNotZoomed = obs_data_get_bool(data, "show_marker_when_not_zoomed");
 	// Continuous cursor tracking was inaccurate on captures whose aspect ratio
 	// differs from the OBS canvas. The marker is intentionally click-only.
 	markerOnlyOnClick = true;
@@ -884,6 +887,7 @@ void ZoominatorController::saveSettings()
 	obs_data_set_int(data, "mouse_idle_timeout_ms", mouseIdleTimeoutMs);
 	obs_data_set_bool(data, "portrait_cover", portraitCover);
 	obs_data_set_bool(data, "show_cursor_marker", showCursorMarker);
+	obs_data_set_bool(data, "show_marker_when_not_zoomed", showMarkerWhenNotZoomed);
 	obs_data_set_bool(data, "marker_only_on_click", true);
 	obs_data_set_int(data, "marker_color", (long long)markerColor);
 	obs_data_set_int(data, "marker_size", markerSize);
@@ -948,10 +952,13 @@ void ZoominatorController::startZoomOut()
 	lastTickMs = 0;
 	animDir.store(-1, std::memory_order_relaxed);
 	tickingWanted.store(true, std::memory_order_release);
-	markerClickFlashStartMs = 0;
-	markerClickFlashHoldUntilMs = 0;
-	markerClickFlashFadeOutEndMs = 0;
-	markerClickHasPos = false;
+	{
+		std::lock_guard<std::mutex> lock(inputMutex);
+		markerClickFlashStartMs = 0;
+		markerClickFlashHoldUntilMs = 0;
+		markerClickFlashFadeOutEndMs = 0;
+		markerClickHasPos = false;
+	}
 	ensureTicking(true);
 }
 
@@ -979,10 +986,13 @@ void ZoominatorController::resetState()
 	sceneContentMin = {};
 	sceneContentMax = {};
 	markerCurrentOpacity = -1;
-	markerClickFlashStartMs = 0;
-	markerClickFlashHoldUntilMs = 0;
-	markerClickFlashFadeOutEndMs = 0;
-	markerClickHasPos = false;
+	{
+		std::lock_guard<std::mutex> lock(inputMutex);
+		markerClickFlashStartMs = 0;
+		markerClickFlashHoldUntilMs = 0;
+		markerClickFlashFadeOutEndMs = 0;
+		markerClickHasPos = false;
+	}
 	obs_source_t *sceneSource = obs_frontend_get_current_scene();
 	if (sceneSource) {
 		obs_scene_t *scene = obs_scene_from_source(sceneSource);
@@ -2185,16 +2195,19 @@ bool ZoominatorController::captureMarkerClickPosition()
 	if (!mapped || !inside)
 		return false;
 
-	markerClickX = mx;
-	markerClickY = my;
-	markerClickHasPos = true;
 	const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
 	static constexpr qint64 kMarkerFadeInMs = 110;
 	static constexpr qint64 kMarkerHoldMs = 420;
 	static constexpr qint64 kMarkerFadeOutMs = 220;
-	markerClickFlashStartMs = nowMs;
-	markerClickFlashHoldUntilMs = nowMs + kMarkerFadeInMs + kMarkerHoldMs;
-	markerClickFlashFadeOutEndMs = markerClickFlashHoldUntilMs + kMarkerFadeOutMs;
+	{
+		std::lock_guard<std::mutex> lock(inputMutex);
+		markerClickX = mx;
+		markerClickY = my;
+		markerClickHasPos = true;
+		markerClickFlashStartMs = nowMs;
+		markerClickFlashHoldUntilMs = nowMs + kMarkerFadeInMs + kMarkerHoldMs;
+		markerClickFlashFadeOutEndMs = markerClickFlashHoldUntilMs + kMarkerFadeOutMs;
+	}
 	ensureTicking(true);
 	return true;
 }
@@ -2212,6 +2225,7 @@ int ZoominatorController::currentMarkerOpacity(qint64 nowMs)
 
 	static constexpr qint64 kMarkerFadeInMs = 110;
 	if (markerClickFlashFadeOutEndMs <= 0 || nowMs >= markerClickFlashFadeOutEndMs) {
+		std::lock_guard<std::mutex> lock(inputMutex);
 		markerClickHasPos = false;
 		markerClickFlashStartMs = 0;
 		markerClickFlashHoldUntilMs = 0;
@@ -2595,10 +2609,13 @@ void ZoominatorController::applyZoomToScene(double t)
 		anchorY = (float)centerY;
 	}
 
-	if (showCursorMarker && markerClickHasPos) {
-		markerSceneX = markerClickX;
-		markerSceneY = markerClickY;
-		markerHasPoint = true;
+	if (showCursorMarker) {
+		std::lock_guard<std::mutex> lock(inputMutex);
+		if (markerClickHasPos) {
+			markerSceneX = markerClickX;
+			markerSceneY = markerClickY;
+			markerHasPoint = true;
+		}
 	}
 
 	const double baseMinX = sceneContentBoundsValid ? (double)sceneContentMin.x : 0.0;
@@ -2708,6 +2725,15 @@ void ZoominatorController::onTick()
 
 	const bool zoomTickWanted = tickingWanted.load(std::memory_order_acquire);
 	if (!zoomTickWanted && !markerClickHasPos) {
+		ensureTicking(false);
+		return;
+	}
+	if (!zoomTickWanted && !showMarkerWhenNotZoomed) {
+		std::lock_guard<std::mutex> lock(inputMutex);
+		markerClickHasPos = false;
+		markerClickFlashStartMs = 0;
+		markerClickFlashHoldUntilMs = 0;
+		markerClickFlashFadeOutEndMs = 0;
 		ensureTicking(false);
 		return;
 	}
