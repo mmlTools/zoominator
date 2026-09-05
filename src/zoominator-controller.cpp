@@ -606,6 +606,7 @@ void ZoominatorController::loadSettings()
 	followMouseRuntimeEnabled = true;
 	followSpeed = 8.0;
 	centerCursorUntilEdge = true;
+	edgeOverflowMarginPct = 0;
 	mouseIdleTimeoutMs = 0;
 	portraitCover = true;
 	showCursorMarker = false;
@@ -787,6 +788,11 @@ void ZoominatorController::loadSettings()
 		followSpeed = 8.0;
 	if (obs_data_has_user_value(data, "center_cursor_until_edge"))
 		centerCursorUntilEdge = obs_data_get_bool(data, "center_cursor_until_edge");
+	if (obs_data_has_user_value(data, "edge_overflow_margin_pct"))
+		edgeOverflowMarginPct = (int)obs_data_get_int(data, "edge_overflow_margin_pct");
+	else if (obs_data_has_user_value(data, "allow_canvas_overflow"))
+		edgeOverflowMarginPct = obs_data_get_bool(data, "allow_canvas_overflow") ? 50 : 0;
+	edgeOverflowMarginPct = std::clamp(edgeOverflowMarginPct, 0, 50);
 	if (obs_data_has_user_value(data, "mouse_idle_timeout_ms"))
 		mouseIdleTimeoutMs = (int)obs_data_get_int(data, "mouse_idle_timeout_ms");
 	mouseIdleTimeoutMs = std::clamp(mouseIdleTimeoutMs, 0, 60000);
@@ -884,6 +890,8 @@ void ZoominatorController::saveSettings()
 	followMouseRuntimeEnabled = true;
 	obs_data_set_double(data, "follow_speed", followSpeed);
 	obs_data_set_bool(data, "center_cursor_until_edge", centerCursorUntilEdge);
+	obs_data_set_int(data, "edge_overflow_margin_pct", edgeOverflowMarginPct);
+	obs_data_set_bool(data, "allow_canvas_overflow", edgeOverflowMarginPct > 0);
 	obs_data_set_int(data, "mouse_idle_timeout_ms", mouseIdleTimeoutMs);
 	obs_data_set_bool(data, "portrait_cover", portraitCover);
 	obs_data_set_bool(data, "show_cursor_marker", showCursorMarker);
@@ -2545,6 +2553,9 @@ void ZoominatorController::applyZoomToScene(double t)
 		}
 	}
 
+	const double marginRatio = (double)edgeOverflowMarginPct / 100.0;
+	const bool allowOverflow = edgeOverflowMarginPct > 0;
+
 	if (zoomAnchor == ZoomAnchorMode::CursorFollow && followMouseRuntimeEnabled && !mouseTrackingIdle) {
 		targetHasPos = false;
 		if (mapped) {
@@ -2568,17 +2579,27 @@ void ZoominatorController::applyZoomToScene(double t)
 			}
 			fx = followX;
 			fy = followY;
-			/* Scale around the tracked pointer itself. Anchoring at the canvas
-			 * centre makes the first zoom frame pull content sideways before
-			 * follow tracking catches up, especially when the pointer starts
-			 * near an edge. */
-			anchorX = followX;
-			anchorY = followY;
+			if (allowOverflow) {
+				anchorX = (float)((double)followX + ((double)centerX - (double)followX) * tt);
+				anchorY = (float)((double)followY + ((double)centerY - (double)followY) * tt);
+			} else {
+				/* Scale around the tracked pointer itself. Anchoring at the canvas
+				 * centre makes the first zoom frame pull content sideways before
+				 * follow tracking catches up, especially when the pointer starts
+				 * near an edge. */
+				anchorX = followX;
+				anchorY = followY;
+			}
 		} else if (followHasPos) {
 			fx = followX;
 			fy = followY;
-			anchorX = followX;
-			anchorY = followY;
+			if (allowOverflow) {
+				anchorX = (float)((double)followX + ((double)centerX - (double)followX) * tt);
+				anchorY = (float)((double)followY + ((double)centerY - (double)followY) * tt);
+			} else {
+				anchorX = followX;
+				anchorY = followY;
+			}
 		}
 	} else {
 		if (!targetHasPos) {
@@ -2605,8 +2626,13 @@ void ZoominatorController::applyZoomToScene(double t)
 		}
 		fx = targetX;
 		fy = targetY;
-		anchorX = (float)centerX;
-		anchorY = (float)centerY;
+		if (allowOverflow && zoomAnchor == ZoomAnchorMode::CursorStatic) {
+			anchorX = (float)((double)targetX + ((double)centerX - (double)targetX) * tt);
+			anchorY = (float)((double)targetY + ((double)centerY - (double)targetY) * tt);
+		} else {
+			anchorX = (float)centerX;
+			anchorY = (float)centerY;
+		}
 	}
 
 	if (showCursorMarker) {
@@ -2631,29 +2657,37 @@ void ZoominatorController::applyZoomToScene(double t)
 	const double minOffsetY = ch - refMaxY;
 	const double maxOffsetY = -refMinY;
 
+	const double overflowLimitX = cw * marginRatio;
+	const double overflowLimitY = ch * marginRatio;
+
+	const double minOffsetXClamped = minOffsetX - overflowLimitX;
+	const double maxOffsetXClamped = maxOffsetX + overflowLimitX;
+	const double minOffsetYClamped = minOffsetY - overflowLimitY;
+	const double maxOffsetYClamped = maxOffsetY + overflowLimitY;
+
 	double offsetX = 0.0;
 	double offsetY = 0.0;
 
-	if (minOffsetX <= maxOffsetX) {
-		offsetX = clampd(0.0, minOffsetX, maxOffsetX);
+	if (minOffsetXClamped <= maxOffsetXClamped) {
+		offsetX = clampd(0.0, minOffsetXClamped, maxOffsetXClamped);
 	} else {
-		offsetX = (minOffsetX + maxOffsetX) * 0.5;
+		offsetX = (minOffsetXClamped + maxOffsetXClamped) * 0.5;
 	}
 
-	if (minOffsetY <= maxOffsetY) {
-		offsetY = clampd(0.0, minOffsetY, maxOffsetY);
+	if (minOffsetYClamped <= maxOffsetYClamped) {
+		offsetY = clampd(0.0, minOffsetYClamped, maxOffsetYClamped);
 	} else {
-		offsetY = (minOffsetY + maxOffsetY) * 0.5;
+		offsetY = (minOffsetYClamped + maxOffsetYClamped) * 0.5;
 	}
 
 	const qint64 nowApplyMs = nowMs;
 	const bool steadyFollow = zoomAnchor == ZoomAnchorMode::CursorFollow && followMouseRuntimeEnabled &&
 				  !mouseTrackingIdle && animDir.load(std::memory_order_relaxed) == 0 && animT >= 0.999;
 	if (steadyFollow) {
-		const float dx = anchorX - lastFollowAnchorX;
-		const float dy = anchorY - lastFollowAnchorY;
-		const bool anchorMovedEnough = !lastFollowAnchorValid || ((dx * dx + dy * dy) >= 1.0f);
-		if (!anchorMovedEnough && nowApplyMs - lastTransformApplyMs < 16) {
+		const float dx = fx - lastFollowAnchorX;
+		const float dy = fy - lastFollowAnchorY;
+		const bool followMovedEnough = !lastFollowAnchorValid || ((dx * dx + dy * dy) >= 1.0f);
+		if (!followMovedEnough && nowApplyMs - lastTransformApplyMs < 16) {
 			std::lock_guard<std::mutex> lock(inputMutex);
 			pendingMarkerVisible = showCursorMarker && markerHasPoint;
 			pendingMarkerX = (double)anchorX + ((double)markerSceneX - (double)fx) * z + offsetX;
@@ -2663,8 +2697,8 @@ void ZoominatorController::applyZoomToScene(double t)
 	}
 
 	lastTransformApplyMs = nowApplyMs;
-	lastFollowAnchorX = anchorX;
-	lastFollowAnchorY = anchorY;
+	lastFollowAnchorX = fx;
+	lastFollowAnchorY = fy;
 	lastFollowAnchorValid = true;
 
 	const uint32_t topLeftAlign = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;

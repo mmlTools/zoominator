@@ -74,6 +74,7 @@ private:
 	QComboBox *cmbZoomAnchor = nullptr;
 	QDoubleSpinBox *spFollowSpeed = nullptr;
 	QCheckBox *chkCenterCursorUntilEdge = nullptr;
+	QSpinBox *spEdgeOverflowMargin = nullptr;
 	QSpinBox *spMouseIdleTimeout = nullptr;
 	QCheckBox *chkPortraitCover = nullptr;
 	QCheckBox *chkShowCursorMarker = nullptr;

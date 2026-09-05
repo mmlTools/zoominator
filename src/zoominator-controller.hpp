@@ -87,6 +87,7 @@ public:
 	bool followMouseRuntimeEnabled = true;
 	double followSpeed = 8.0;
 	bool centerCursorUntilEdge = true;
+	int edgeOverflowMarginPct = 0;
 	int mouseIdleTimeoutMs = 0;
 	bool portraitCover = true;
 	bool showCursorMarker = false;
