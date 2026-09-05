@@ -383,6 +383,13 @@ void ZoominatorDialog::buildUi()
 		chkCenterCursorUntilEdge = new QCheckBox(T("Dialog.CenterCursorUntilEdge"), page);
 		chkCenterCursorUntilEdge->setToolTip(T("Dialog.CenterCursorUntilEdgeTooltip"));
 
+		spEdgeOverflowMargin = new QSpinBox(page);
+		spEdgeOverflowMargin->setRange(0, 50);
+		spEdgeOverflowMargin->setSingleStep(5);
+		spEdgeOverflowMargin->setSuffix(T("Unit.Percent"));
+		spEdgeOverflowMargin->setSpecialValueText(T("Dialog.EdgeOverflow.Disabled"));
+		spEdgeOverflowMargin->setToolTip(T("Dialog.EdgeOverflowMarginTooltip"));
+
 		spMouseIdleTimeout = new QSpinBox(page);
 		spMouseIdleTimeout->setRange(0, 60000);
 		spMouseIdleTimeout->setSingleStep(100);
@@ -397,6 +404,13 @@ void ZoominatorDialog::buildUi()
 		followRow->addWidget(mkField(T("Dialog.SmoothingSpeed"), spFollowSpeed), 1);
 		followRow->addWidget(mkField(T("Dialog.MouseIdleTimeout"), spMouseIdleTimeout), 1);
 		lay->addLayout(followRow);
+
+		auto *overflowRow = new QHBoxLayout;
+		overflowRow->setSpacing(12);
+		overflowRow->addWidget(mkField(T("Dialog.EdgeOverflowMargin"), spEdgeOverflowMargin), 1);
+		overflowRow->addStretch(2);
+		lay->addLayout(overflowRow);
+
 		lay->addWidget(chkCenterCursorUntilEdge);
 
 		/* Smoothing and the idle freeze only mean something while the anchor
@@ -693,6 +707,7 @@ void ZoominatorDialog::loadFromController()
 		cmbZoomAnchor->setCurrentIndex(anchorIdx >= 0 ? anchorIdx : 2);
 		spFollowSpeed->setValue(c.followSpeed);
 		chkCenterCursorUntilEdge->setChecked(c.centerCursorUntilEdge);
+		spEdgeOverflowMargin->setValue(c.edgeOverflowMarginPct);
 		spMouseIdleTimeout->setValue(c.mouseIdleTimeoutMs);
 		chkPortraitCover->setChecked(c.portraitCover);
 		chkShowCursorMarker->setChecked(c.showCursorMarker);
@@ -750,6 +765,7 @@ void ZoominatorDialog::applyToController()
 	c.zoomAnchor = ZoominatorController::zoomAnchorModeFromString(cmbZoomAnchor->currentData().toString());
 	c.followSpeed = spFollowSpeed->value();
 	c.centerCursorUntilEdge = chkCenterCursorUntilEdge->isChecked();
+	c.edgeOverflowMarginPct = spEdgeOverflowMargin->value();
 	c.mouseIdleTimeoutMs = spMouseIdleTimeout->value();
 	c.portraitCover = chkPortraitCover->isChecked();
 	c.showCursorMarker = chkShowCursorMarker->isChecked();
