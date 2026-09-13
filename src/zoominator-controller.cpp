@@ -76,6 +76,62 @@ static inline double clampd(double v, double lo, double hi)
 	return v;
 }
 
+bool ZoominatorController::usesWheelZoomGesture() const
+{
+	return triggerType == "mouse" && mouseButton == "x2" && hotkeyMode == "toggle" && !modCtrl && !modAlt &&
+	       !modShift && !modWin && !modLeftCtrl && !modRightCtrl && !modLeftAlt && !modRightAlt && !modLeftShift &&
+	       !modRightShift && !modLeftWin && !modRightWin;
+}
+
+void ZoominatorController::beginWheelZoomGesture()
+{
+	zoomAdjustButtonHeld = true;
+	zoomAdjustedDuringButtonHold = false;
+	wheelDeltaRemainder = 0;
+	captureMarkerClickPosition();
+}
+
+void ZoominatorController::adjustActiveZoomFromWheel(int direction, int steps)
+{
+	if (!zoomAdjustButtonHeld)
+		return;
+	if (direction == 0 || steps <= 0)
+		return;
+
+	const bool wasActive = zoomActive.load(std::memory_order_acquire);
+	const double delta = direction > 0 ? wheelZoomInStep * steps : -wheelZoomOutStep * steps;
+	zoomFactor = clampd(zoomFactor + delta, wheelZoomMinimum, wheelZoomMaximum);
+	zoomAdjustedDuringButtonHold = true;
+	if (zoomFactor > 1.0) {
+		if (!wasActive || animDir.load(std::memory_order_relaxed) < 0) {
+			/* The existing entrance animation supplies the first transition.
+			 * Later wheel notches use renderedZoomFactor's smoothing above. */
+			if (!wasActive)
+				renderedZoomFactor = zoomFactor;
+			startZoomIn();
+		}
+	} else {
+		zoomLatched = false;
+		startZoomOut();
+	}
+	scheduleSettingsSave();
+	emit settingsChanged();
+}
+
+void ZoominatorController::finishWheelZoomGesture()
+{
+	zoomAdjustButtonHeld = false;
+	wheelDeltaRemainder = 0;
+	if (zoomAdjustedDuringButtonHold)
+		return;
+
+	zoomFactor = 1.0;
+	zoomLatched = false;
+	startZoomOut();
+	scheduleSettingsSave();
+	emit settingsChanged();
+}
+
 static inline double smoothstep(double t)
 {
 	return t * t * (3.0 - 2.0 * t);
@@ -3198,12 +3254,38 @@ LRESULT CALLBACK ZoominatorController::mouse_hook_proc(int nCode, WPARAM wParam,
 				   wParam == WM_XBUTTONDOWN);
 		const bool up = (wParam == WM_LBUTTONUP || wParam == WM_RBUTTONUP || wParam == WM_MBUTTONUP ||
 				 wParam == WM_XBUTTONUP);
+		const unsigned short mouseData = (unsigned short)HIWORD(m->mouseData);
+
+		/* Match the X11 Mouse5 gesture on Windows. WH_MOUSE_LL reports wheel
+		 * input globally and lets the hook consume only the events belonging to
+		 * this gesture, so the application below the pointer does not scroll or
+		 * receive an X2 navigation command while zoom is being adjusted. */
+		if (g_ctl->usesWheelZoomGesture()) {
+			if (wParam == WM_XBUTTONDOWN && mouseData == XBUTTON2 && g_ctl->modsMatch()) {
+				g_ctl->beginWheelZoomGesture();
+				return 1;
+			}
+
+			if (g_ctl->zoomAdjustButtonHeld && wParam == WM_MOUSEWHEEL) {
+				const int delta = GET_WHEEL_DELTA_WPARAM(m->mouseData);
+				g_ctl->wheelDeltaRemainder += delta;
+				const int steps = g_ctl->wheelDeltaRemainder / WHEEL_DELTA;
+				g_ctl->wheelDeltaRemainder %= WHEEL_DELTA;
+				if (steps != 0)
+					g_ctl->adjustActiveZoomFromWheel(steps > 0 ? 1 : -1, std::abs(steps));
+				return 1;
+			}
+
+			if (g_ctl->zoomAdjustButtonHeld && wParam == WM_XBUTTONUP && mouseData == XBUTTON2) {
+				g_ctl->finishWheelZoomGesture();
+				return 1;
+			}
+		}
 
 		if (down)
 			g_ctl->captureMarkerClickPosition();
 
 		if (g_ctl->triggerType == "mouse" && (down || up)) {
-			unsigned short mouseData = (unsigned short)HIWORD(m->mouseData);
 			if (mods_current(g_ctl->modCtrl, g_ctl->modAlt, g_ctl->modShift, g_ctl->modWin,
 					 g_ctl->modLeftCtrl, g_ctl->modRightCtrl, g_ctl->modLeftAlt, g_ctl->modRightAlt,
 					 g_ctl->modLeftShift, g_ctl->modRightShift, g_ctl->modLeftWin,
@@ -3456,52 +3538,6 @@ static bool linux_button_matches(int button, const QString &want)
 	return false;
 }
 
-bool ZoominatorController::usesLinuxWheelZoomGesture() const
-{
-	return triggerType == "mouse" && mouseButton == "x2" && hotkeyMode == "toggle" && !modCtrl && !modAlt &&
-	       !modShift && !modWin && !modLeftCtrl && !modRightCtrl && !modLeftAlt && !modRightAlt && !modLeftShift &&
-	       !modRightShift && !modLeftWin && !modRightWin;
-}
-
-void ZoominatorController::adjustActiveZoomFromWheel(int button)
-{
-	if (!zoomAdjustButtonHeld)
-		return;
-	if (button != 4 && button != 5)
-		return;
-
-	const bool wasActive = zoomActive.load(std::memory_order_acquire);
-	const double delta = button == 4 ? wheelZoomInStep : -wheelZoomOutStep;
-	zoomFactor = clampd(zoomFactor + delta, wheelZoomMinimum, wheelZoomMaximum);
-	zoomAdjustedDuringButtonHold = true;
-	if (zoomFactor > 1.0) {
-		if (!wasActive) {
-			/* The existing entrance animation supplies the first transition.
-			 * Later wheel notches use renderedZoomFactor's smoothing above. */
-			renderedZoomFactor = zoomFactor;
-			startZoomIn();
-		}
-	} else {
-		zoomLatched = false;
-		startZoomOut();
-	}
-	scheduleSettingsSave();
-	emit settingsChanged();
-}
-
-void ZoominatorController::finishLinuxWheelZoomGesture()
-{
-	zoomAdjustButtonHeld = false;
-	if (zoomAdjustedDuringButtonHold)
-		return;
-
-	zoomFactor = 1.0;
-	zoomLatched = false;
-	startZoomOut();
-	scheduleSettingsSave();
-	emit settingsChanged();
-}
-
 void ZoominatorController::processXInput2Events()
 {
 	if (!xiDisplay)
@@ -3516,14 +3552,12 @@ void ZoominatorController::processXInput2Events()
 			const bool down = ev.type == ButtonPress;
 			if (button == 9) {
 				if (down) {
-					zoomAdjustButtonHeld = true;
-					zoomAdjustedDuringButtonHold = false;
-					captureMarkerClickPosition();
+					beginWheelZoomGesture();
 				} else {
-					finishLinuxWheelZoomGesture();
+					finishWheelZoomGesture();
 				}
 			} else if (down && (button == 4 || button == 5)) {
-				adjustActiveZoomFromWheel(button);
+				adjustActiveZoomFromWheel(button == 4 ? 1 : -1);
 			}
 			continue;
 		}
@@ -4293,7 +4327,7 @@ void ZoominatorController::installHooks()
 		}
 		XISelectEvents(xiDisplay, DefaultRootWindow(xiDisplay), &evmask, 1);
 
-		if (usesLinuxWheelZoomGesture()) {
+		if (usesWheelZoomGesture()) {
 			/* A passive grab becomes active only while Mouse5 is held. During
 			 * that short interval wheel events come exclusively to this plugin,
 			 * so the application below the cursor does not scroll. X11 releases
@@ -4327,6 +4361,9 @@ void ZoominatorController::uninstallHooks()
 		UnhookWindowsHookEx((HHOOK)mouseHook);
 		mouseHook = nullptr;
 	}
+	zoomAdjustButtonHeld = false;
+	zoomAdjustedDuringButtonHold = false;
+	wheelDeltaRemainder = 0;
 	g_ctl = nullptr;
 #elif defined(__APPLE__)
 	if (runLoopSource) {
@@ -4357,6 +4394,7 @@ void ZoominatorController::uninstallHooks()
 	}
 	zoomAdjustButtonHeld = false;
 	zoomAdjustedDuringButtonHold = false;
+	wheelDeltaRemainder = 0;
 	g_ctl = nullptr;
 #endif
 }

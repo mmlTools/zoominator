@@ -125,9 +125,10 @@ private:
 	bool needsMouseHook() const;
 	void onTriggerDown();
 	void onTriggerUp();
-	void adjustActiveZoomFromWheel(int button);
-	bool usesLinuxWheelZoomGesture() const;
-	void finishLinuxWheelZoomGesture();
+	void beginWheelZoomGesture();
+	void adjustActiveZoomFromWheel(int direction, int steps = 1);
+	bool usesWheelZoomGesture() const;
+	void finishWheelZoomGesture();
 	void toggleFollowMouseRuntime();
 	bool triggerMatchesKeyboard(int vk) const;
 	bool triggerMatchesMouse(unsigned int msg, unsigned short mouseData) const;
@@ -195,6 +196,7 @@ private:
 	bool zoomLatched = false;
 	bool zoomAdjustButtonHeld = false;
 	bool zoomAdjustedDuringButtonHold = false;
+	int wheelDeltaRemainder = 0;
 	/* Release-stored by the main thread once capture completes, acquire-loaded
 	 * by the graphics thread; that ordering is what makes sceneItems safe to
 	 * read there without holding a lock across the transform writes. */
