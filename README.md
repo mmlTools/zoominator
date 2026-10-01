@@ -43,12 +43,16 @@ It operates at the **scene level**, meaning it works with any source automatical
 ## Installation
 
 ### Windows
-1. Download the latest release
-2. Extract the archive and move the zoominator.dll file into your OBS Studio directory:
-   ```
-   C:\Program Files\obs-studio\obs-plugins\64bit
-   ```
-3. Restart OBS
+
+1. Download the latest release.
+2. Extract the archive.
+3. Copy the **contents of the extracted archive** to your OBS Studio installation directory, preserving the directory structure.
+
+   The release package contains both the plugin binary and required localization files. Do **not** copy only `zoominator.dll`.
+
+4. Restart OBS.
+
+> **Troubleshooting:** If Zoominator appears in the OBS `Tools` menu as `Menu.Tools.Zoominator` instead of `Zoominator`, the required localization files may not have been installed. Reinstall the plugin using the complete release archive.
 
 ### macOS
 1. Download the `.pkg` or `.dmg` from releases
