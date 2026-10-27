@@ -521,6 +521,10 @@ void ZoominatorDialog::buildUi()
 		chkPortraitCover->setToolTip(T("Dialog.PortraitCoverTooltip"));
 		lay->addWidget(chkPortraitCover);
 
+		chkZoomWithinItemBounds = new QCheckBox(T("Dialog.ZoomWithinItemBounds"), page);
+		chkZoomWithinItemBounds->setToolTip(T("Dialog.ZoomWithinItemBoundsTooltip"));
+		lay->addWidget(chkZoomWithinItemBounds);
+
 		addSection(lay, T("Dialog.Section.CursorHalo"));
 
 		chkShowCursorMarker = new QCheckBox(T("Dialog.ShowCursorHalo"), page);
@@ -910,6 +914,7 @@ void ZoominatorDialog::loadFromController()
 		spEdgeOverflowMargin->setValue(c.edgeOverflowMarginPct);
 		spMouseIdleTimeout->setValue(c.mouseIdleTimeoutMs);
 		chkPortraitCover->setChecked(c.portraitCover);
+		chkZoomWithinItemBounds->setChecked(c.zoomWithinItemBounds);
 		chkShowCursorMarker->setChecked(c.showCursorMarker);
 		chkShowMarkerWhenNotZoomed->setChecked(c.showMarkerWhenNotZoomed);
 		chkShowMarkerWhenNotZoomed->setEnabled(c.showCursorMarker);
@@ -968,6 +973,7 @@ void ZoominatorDialog::applyToController()
 	c.edgeOverflowMarginPct = spEdgeOverflowMargin->value();
 	c.mouseIdleTimeoutMs = spMouseIdleTimeout->value();
 	c.portraitCover = chkPortraitCover->isChecked();
+	c.zoomWithinItemBounds = chkZoomWithinItemBounds->isChecked();
 	c.showCursorMarker = chkShowCursorMarker->isChecked();
 	c.showMarkerWhenNotZoomed = chkShowMarkerWhenNotZoomed->isChecked();
 	c.markerOnlyOnClick = true;

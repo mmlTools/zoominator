@@ -13,6 +13,7 @@
 #include <QString>
 #include <QHash>
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <vector>
 
@@ -93,6 +94,7 @@ public:
 	int edgeOverflowMarginPct = 0;
 	int mouseIdleTimeoutMs = 0;
 	bool portraitCover = true;
+	bool zoomWithinItemBounds = false;
 	bool showCursorMarker = false;
 	bool showMarkerWhenNotZoomed = false;
 	bool markerOnlyOnClick = true;
@@ -161,6 +163,8 @@ private:
 	bool isMarkerFlashActive(qint64 nowMs) const;
 	int currentMarkerOpacity(qint64 nowMs);
 	void applyZoomToScene(double t);
+	void applyZoomWithinItemBounds(double z, float fx, float fy, float markerSceneX, float markerSceneY,
+				       bool markerHasPoint, const std::function<bool(obs_sceneitem_t *)> &isLiveItem);
 
 	/* Split loop. Frame-critical work runs on OBS's graphics thread via
 	 * obs_add_tick_callback so the transform lands exactly once per rendered

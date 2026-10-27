@@ -19,6 +19,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <functional>
 
 #include <QFileInfo>
 
@@ -37,6 +38,7 @@
 #endif
 
 #include "zoominator-dialog.hpp"
+#include "box-zoom.hpp"
 
 #ifdef __linux__
 #include <X11/Xlib.h>
@@ -696,6 +698,7 @@ void ZoominatorController::loadSettings()
 	edgeOverflowMarginPct = 0;
 	mouseIdleTimeoutMs = 0;
 	portraitCover = true;
+	zoomWithinItemBounds = false;
 	showCursorMarker = false;
 	showMarkerWhenNotZoomed = false;
 	markerOnlyOnClick = true;
@@ -886,6 +889,8 @@ void ZoominatorController::loadSettings()
 
 	if (obs_data_has_user_value(data, "portrait_cover"))
 		portraitCover = obs_data_get_bool(data, "portrait_cover");
+	if (obs_data_has_user_value(data, "zoom_within_item_bounds"))
+		zoomWithinItemBounds = obs_data_get_bool(data, "zoom_within_item_bounds");
 	if (obs_data_has_user_value(data, "show_cursor_marker"))
 		showCursorMarker = obs_data_get_bool(data, "show_cursor_marker");
 	if (obs_data_has_user_value(data, "show_marker_when_not_zoomed"))
@@ -981,6 +986,7 @@ void ZoominatorController::saveSettings()
 	obs_data_set_bool(data, "allow_canvas_overflow", edgeOverflowMarginPct > 0);
 	obs_data_set_int(data, "mouse_idle_timeout_ms", mouseIdleTimeoutMs);
 	obs_data_set_bool(data, "portrait_cover", portraitCover);
+	obs_data_set_bool(data, "zoom_within_item_bounds", zoomWithinItemBounds);
 	obs_data_set_bool(data, "show_cursor_marker", showCursorMarker);
 	obs_data_set_bool(data, "show_marker_when_not_zoomed", showMarkerWhenNotZoomed);
 	obs_data_set_bool(data, "marker_only_on_click", true);
@@ -2388,9 +2394,6 @@ void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
 	if (!orig.valid)
 		return;
 
-	float renderedW = 0.0f;
-	float renderedH = 0.0f;
-
 	obs_source_t *src = obs_sceneitem_get_source(item);
 	float visibleW = 0.0f;
 	float visibleH = 0.0f;
@@ -2405,49 +2408,29 @@ void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
 	if (visibleH <= 0.0f)
 		visibleH = 1.0f;
 
-	if (orig.boundsType == OBS_BOUNDS_NONE || orig.bounds.x <= 0.0f || orig.bounds.y <= 0.0f) {
-		renderedW = visibleW * orig.scale.x;
-		renderedH = visibleH * orig.scale.y;
-	} else {
-		const float sx = orig.bounds.x / visibleW;
-		const float sy = orig.bounds.y / visibleH;
-
-		renderedW = orig.bounds.x;
-		renderedH = orig.bounds.y;
-		orig.effectiveScale.x = sx;
-		orig.effectiveScale.y = sy;
-	}
-
-	if (orig.boundsType == OBS_BOUNDS_NONE || orig.bounds.x <= 0.0f || orig.bounds.y <= 0.0f) {
-		orig.effectiveScale.x = renderedW / visibleW;
-		orig.effectiveScale.y = renderedH / visibleH;
-	}
+	/* Where libobs actually draws the item: bounds fitting (inner, outer,
+	 * width, height, stretch, max-only) and both alignments, as in
+	 * update_item_transform / calculate_bounds_data (obs-scene.c). Treating
+	 * every bounds type as a stretch distorts bounded sources while zoomed. */
+	const zoominator::ItemPlacement placement =
+		zoominator::item_placement((int)orig.boundsType, orig.align, orig.boundsAlign, orig.bounds.x,
+					   orig.bounds.y, visibleW, visibleH, orig.scale.x, orig.scale.y);
+	orig.effectiveScale.x = (float)placement.scaleX;
+	orig.effectiveScale.y = (float)placement.scaleY;
 
 	/* libobs maps a scene item as
 	 *     p_scene = R(rot) * (S * p_local - origin) + pos
-	 * (update_item_transform, obs-scene.c), where origin is the alignment
-	 * offset inside the scaled item. The zoom re-anchors every item to
-	 * top-left alignment but deliberately leaves rot untouched, so the
-	 * alignment origin must be rotated before it is subtracted. Subtracting it
-	 * unrotated anchors a rotated source as if it were axis-aligned, which
-	 * swings it off the canvas. Reduces to the old expression when rot == 0. */
-	vec2 originOffset{};
-	if (orig.align & OBS_ALIGN_RIGHT)
-		originOffset.x = renderedW;
-	else if (!(orig.align & OBS_ALIGN_LEFT))
-		originOffset.x = renderedW * 0.5f;
-
-	if (orig.align & OBS_ALIGN_BOTTOM)
-		originOffset.y = renderedH;
-	else if (!(orig.align & OBS_ALIGN_TOP))
-		originOffset.y = renderedH * 0.5f;
-
+	 * so the top-left of the visible content is pos + R(rot) * offset. The
+	 * zoom re-anchors every item to top-left alignment but deliberately leaves
+	 * rot untouched, so the offset must be rotated before it is added. */
 	float originSin = 0.0f;
 	float originCos = 1.0f;
 	rotation_sin_cos(orig.rot, originSin, originCos);
 
-	orig.effectivePos.x = orig.pos.x - (originOffset.x * originCos - originOffset.y * originSin);
-	orig.effectivePos.y = orig.pos.y - (originOffset.x * originSin + originOffset.y * originCos);
+	const double offX = placement.offX;
+	const double offY = placement.offY;
+	orig.effectivePos.x = (float)(orig.pos.x + (offX * originCos - offY * originSin));
+	orig.effectivePos.y = (float)(orig.pos.y + (offX * originSin + offY * originCos));
 
 	orig.valid = true;
 
@@ -2753,6 +2736,11 @@ void ZoominatorController::applyZoomToScene(double t)
 		}
 	}
 
+	if (zoomWithinItemBounds) {
+		applyZoomWithinItemBounds(z, fx, fy, markerSceneX, markerSceneY, markerHasPoint, isLiveItem);
+		return;
+	}
+
 	const double baseMinX = sceneContentBoundsValid ? (double)sceneContentMin.x : 0.0;
 	const double baseMinY = sceneContentBoundsValid ? (double)sceneContentMin.y : 0.0;
 	const double baseMaxX = sceneContentBoundsValid ? (double)sceneContentMax.x : cw;
@@ -2855,6 +2843,100 @@ void ZoominatorController::applyZoomToScene(double t)
 		pendingMarkerX = (double)anchorX + ((double)markerSceneX - (double)fx) * z + offsetX;
 		pendingMarkerY = (double)anchorY + ((double)markerSceneY - (double)fy) * z + offsetY;
 	}
+}
+
+/* Zooms each item inside its own frame: position, alignment and bounds stay
+ * as they are, and the crop narrows to 1/z of the originally visible region
+ * around the focus point. Items without bounds get their scale raised by the
+ * same ratio so the cropped region still fills the original size; bounded
+ * items are refitted to their unchanged bounds box by libobs. Runs on the
+ * graphics tick like the canvas zoom path. */
+void ZoominatorController::applyZoomWithinItemBounds(double z, float fx, float fy, float markerSceneX,
+						     float markerSceneY, bool markerHasPoint,
+						     const std::function<bool(obs_sceneitem_t *)> &isLiveItem)
+{
+	bool markerPlaced = false;
+	double markerX = markerSceneX;
+	double markerY = markerSceneY;
+
+	for (auto &state : sceneItems) {
+		if (!state.item || !state.orig.valid || !isLiveItem(state.item))
+			continue;
+		obs_source_t *src = obs_sceneitem_get_source(state.item);
+		if (!src)
+			continue;
+
+		const int srcW = (int)obs_source_get_width(src);
+		const int srcH = (int)obs_source_get_height(src);
+		const zoominator::ItemCrop origCrop{state.orig.crop.left, state.orig.crop.top, state.orig.crop.right,
+						    state.orig.crop.bottom};
+		const int visW = srcW - origCrop.l - origCrop.r;
+		const int visH = srcH - origCrop.t - origCrop.b;
+		const double effSx = state.orig.effectiveScale.x;
+		const double effSy = state.orig.effectiveScale.y;
+		if (visW <= 0 || visH <= 0 || std::fabs(effSx) < 1e-6 || std::fabs(effSy) < 1e-6)
+			continue;
+
+		float sn = 0.0f, cs = 1.0f;
+		rotation_sin_cos(state.orig.rot, sn, cs);
+		/* Canvas point -> this item's source pixels (inverse of the placement). */
+		auto toSource = [&](double px, double py, double &u, double &v) {
+			const double dx = px - (double)state.orig.effectivePos.x;
+			const double dy = py - (double)state.orig.effectivePos.y;
+			u = origCrop.l + (dx * cs + dy * sn) / effSx;
+			v = origCrop.t + (-dx * sn + dy * cs) / effSy;
+		};
+
+		double u = origCrop.l + visW * 0.5;
+		double v = origCrop.t + visH * 0.5;
+		if (zoomAnchor != ZoomAnchorMode::CanvasCenter)
+			toSource(fx, fy, u, v);
+
+		zoominator::ItemCrop crop;
+		if (!zoominator::box_zoom_crop(srcW, srcH, origCrop, z, u, v, crop))
+			continue;
+
+		obs_sceneitem_crop itemCrop{};
+		itemCrop.left = crop.l;
+		itemCrop.top = crop.t;
+		itemCrop.right = crop.r;
+		itemCrop.bottom = crop.b;
+		obs_sceneitem_set_crop(state.item, &itemCrop);
+
+		const int newW = srcW - crop.l - crop.r;
+		const int newH = srcH - crop.t - crop.b;
+		const double ratioX = (double)visW / (double)newW;
+		const double ratioY = (double)visH / (double)newH;
+		if (state.orig.boundsType == OBS_BOUNDS_NONE) {
+			vec2 sc{};
+			sc.x = (float)(state.orig.scale.x * ratioX);
+			sc.y = (float)(state.orig.scale.y * ratioY);
+			if (!state.lastAppliedValid || !nearly_equal_vec2(state.lastAppliedScale, sc, kScaleEpsilon)) {
+				obs_sceneitem_set_scale(state.item, &sc);
+				state.lastAppliedScale = sc;
+			}
+		}
+		state.lastAppliedValid = true;
+
+		/* The click halo follows the content of the first item it falls on. */
+		if (markerHasPoint && !markerPlaced) {
+			double mu = 0.0, mv = 0.0;
+			toSource(markerSceneX, markerSceneY, mu, mv);
+			if (mu >= origCrop.l && mu <= origCrop.l + visW && mv >= origCrop.t &&
+			    mv <= origCrop.t + visH) {
+				const double lx = (mu - crop.l) * effSx * ratioX;
+				const double ly = (mv - crop.t) * effSy * ratioY;
+				markerX = state.orig.effectivePos.x + lx * cs - ly * sn;
+				markerY = state.orig.effectivePos.y + lx * sn + ly * cs;
+				markerPlaced = true;
+			}
+		}
+	}
+
+	std::lock_guard<std::mutex> lock(inputMutex);
+	pendingMarkerVisible = showCursorMarker && markerHasPoint;
+	pendingMarkerX = markerX;
+	pendingMarkerY = markerY;
 }
 
 /* Main-thread half of the loop. Samples everything the graphics thread is not
