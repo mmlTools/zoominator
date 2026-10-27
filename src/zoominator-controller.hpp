@@ -16,6 +16,8 @@
 #include <mutex>
 #include <vector>
 
+#include "capture-mapping.hpp"
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -283,6 +285,19 @@ private:
 	bool sceneContentBoundsValid = false;
 	vec2 sceneContentMin{};
 	vec2 sceneContentMax{};
+
+	/* Screen area behind each zoomed capture source, so the cursor can be
+	 * mapped through the capture's own position and crop instead of through
+	 * the whole selected screen. Built and read on the main thread only. */
+	struct CaptureTarget {
+		zoominator::CaptureMap map;
+		int64_t windowId = 0;
+		obs_sceneitem_t *item = nullptr;
+	};
+	std::vector<CaptureTarget> captureTargets;
+	qint64 captureTargetsRefreshMs = 0;
+	void buildCaptureTargets();
+	void refreshCaptureTargets(qint64 nowMs);
 
 	QPointer<ZoominatorDialog> dialog;
 	obs_source_t *markerSource = nullptr;

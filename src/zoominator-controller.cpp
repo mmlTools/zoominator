@@ -1077,6 +1077,7 @@ void ZoominatorController::resetState()
 	lastTransformApplyMs = 0;
 	lastFollowAnchorValid = false;
 	sceneItems.clear();
+	captureTargets.clear();
 	sceneContentBoundsValid = false;
 	sceneContentMin = {};
 	sceneContentMax = {};
@@ -1191,6 +1192,21 @@ bool ZoominatorController::getSelectedScreenRect(int &x, int &y, int &w, int &h)
 			return w > 0 && h > 0;
 		}
 	}
+#ifdef __APPLE__
+	/* The saved screen is gone (e.g. an external display was unplugged).
+	 * Follow the screen the cursor is on rather than disabling tracking. */
+	QScreen *fallback = QGuiApplication::screenAt(QCursor::pos());
+	if (!fallback)
+		fallback = QGuiApplication::primaryScreen();
+	if (fallback) {
+		const QRect g = fallback->geometry();
+		x = g.x();
+		y = g.y();
+		w = g.width();
+		h = g.height();
+		return w > 0 && h > 0;
+	}
+#endif
 	return false;
 }
 
@@ -1722,6 +1738,55 @@ static bool match_window_rect_for_source(obs_source_t *src, CGRect &rcOut)
 	CFRelease(windowList);
 	return found;
 }
+
+static bool window_bounds_for_id(int64_t windowId, CGRect &rcOut)
+{
+	if (windowId == 0)
+		return false;
+	CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, (CGWindowID)windowId);
+	if (!windowList)
+		return false;
+
+	bool found = false;
+	if (CFArrayGetCount(windowList) > 0) {
+		CFDictionaryRef dict = (CFDictionaryRef)CFArrayGetValueAtIndex(windowList, 0);
+		CFDictionaryRef boundsDict = (CFDictionaryRef)CFDictionaryGetValue(dict, kCGWindowBounds);
+		found = boundsDict && CGRectMakeWithDictionaryRepresentation(boundsDict, &rcOut);
+	}
+	CFRelease(windowList);
+	return found;
+}
+
+/* Screen area, in global points, that a capture source's pixels come from.
+ * macOS Screen Capture in display and application mode both deliver a frame the
+ * size of the whole display; window mode and the legacy window capture deliver
+ * just the window. Other sources have no screen area. */
+static bool resolve_capture_rect(obs_source_t *src, CGRect &rcOut, int64_t &windowIdOut)
+{
+	windowIdOut = 0;
+	const char *id = src ? obs_source_get_unversioned_id(src) : nullptr;
+	if (!id)
+		return false;
+
+	const bool sck = strcmp(id, "screen_capture") == 0;
+	const bool legacyDisplay = strcmp(id, "display_capture") == 0;
+	const bool legacyWindow = strcmp(id, "window_capture") == 0;
+	if (!sck && !legacyDisplay && !legacyWindow)
+		return false;
+
+	obs_data_t *s = obs_source_get_settings(src);
+	if (!s)
+		return false;
+	const bool windowMode = legacyWindow || (sck && obs_data_get_int(s, "type") == 1);
+	const int64_t windowId = obs_data_get_int(s, "window");
+	obs_data_release(s);
+
+	if (windowMode) {
+		windowIdOut = windowId;
+		return window_bounds_for_id(windowId, rcOut);
+	}
+	return match_monitor_rect(src, rcOut);
+}
 #endif
 
 #ifdef __linux__
@@ -1969,12 +2034,106 @@ static bool match_window_rect_for_source(obs_source_t *src, LinuxRect &rcOut)
 }
 #endif
 
+void ZoominatorController::buildCaptureTargets()
+{
+	captureTargets.clear();
+	captureTargetsRefreshMs = QDateTime::currentMSecsSinceEpoch();
+#ifdef __APPLE__
+	obs_source_t *sceneSource = obs_frontend_get_current_scene();
+	obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+
+	for (const auto &state : sceneItems) {
+		if (!state.item || !state.orig.valid || !obs_sceneitem_visible(state.item))
+			continue;
+		/* The zoom itself ignores a parent scene's transform, so only items
+		 * placed directly in the program scene can be mapped exactly. */
+		if (!scene || obs_sceneitem_get_scene(state.item) != scene)
+			continue;
+
+		obs_source_t *src = obs_sceneitem_get_source(state.item);
+		CGRect rc{};
+		int64_t windowId = 0;
+		if (!resolve_capture_rect(src, rc, windowId))
+			continue;
+
+		CaptureTarget target;
+		target.item = state.item;
+		target.windowId = windowId;
+		zoominator::CaptureMap &m = target.map;
+		m.rectX = rc.origin.x;
+		m.rectY = rc.origin.y;
+		m.rectW = rc.size.width;
+		m.rectH = rc.size.height;
+		m.srcW = (double)obs_source_get_width(src);
+		m.srcH = (double)obs_source_get_height(src);
+		m.cropL = state.orig.crop.left;
+		m.cropT = state.orig.crop.top;
+		m.cropR = state.orig.crop.right;
+		m.cropB = state.orig.crop.bottom;
+		m.posX = state.orig.effectivePos.x;
+		m.posY = state.orig.effectivePos.y;
+		m.scaleX = state.orig.effectiveScale.x;
+		m.scaleY = state.orig.effectiveScale.y;
+		m.rotDeg = state.orig.rot;
+		captureTargets.push_back(target);
+	}
+
+	if (sceneSource)
+		obs_source_release(sceneSource);
+#endif
+}
+
+void ZoominatorController::refreshCaptureTargets(qint64 nowMs)
+{
+#ifdef __APPLE__
+	/* Windows can be moved or resized mid-zoom; displays cannot. */
+	static constexpr qint64 kWindowRefreshMs = 200;
+	if (captureTargets.empty() || nowMs - captureTargetsRefreshMs < kWindowRefreshMs)
+		return;
+	captureTargetsRefreshMs = nowMs;
+
+	for (auto &target : captureTargets) {
+		if (target.windowId == 0)
+			continue;
+		CGRect rc{};
+		if (!window_bounds_for_id(target.windowId, rc))
+			continue;
+		target.map.rectX = rc.origin.x;
+		target.map.rectY = rc.origin.y;
+		target.map.rectW = rc.size.width;
+		target.map.rectH = rc.size.height;
+		if (obs_source_t *src = obs_sceneitem_get_source(target.item)) {
+			target.map.srcW = (double)obs_source_get_width(src);
+			target.map.srcH = (double)obs_source_get_height(src);
+		}
+	}
+#else
+	(void)nowMs;
+#endif
+}
+
 bool ZoominatorController::mapCursorToScenePixels(int cursorX, int cursorY, float &sx, float &sy,
 						  bool &cursorInside) const
 {
 	cursorInside = false;
 	sx = 0.f;
 	sy = 0.f;
+
+	if (!captureTargets.empty()) {
+		std::vector<zoominator::CaptureMap> maps;
+		maps.reserve(captureTargets.size());
+		for (const auto &target : captureTargets)
+			maps.push_back(target.map);
+		const int pick = zoominator::capture_pick(maps, cursorX, cursorY);
+		double mx = 0.0, my = 0.0;
+		bool inside = false;
+		if (pick >= 0 && zoominator::capture_map_cursor(maps[(size_t)pick], cursorX, cursorY, mx, my, inside)) {
+			sx = (float)mx;
+			sy = (float)my;
+			cursorInside = inside;
+			return true;
+		}
+	}
 
 	int rx = 0, ry = 0, rw = 0, rh = 0;
 	if (!getSelectedScreenRect(rx, ry, rw, rh) || rw <= 0 || rh <= 0)
@@ -2464,6 +2623,7 @@ void ZoominatorController::captureOriginal(obs_sceneitem_t *item)
 void ZoominatorController::captureOriginalSceneItems(const std::vector<obs_sceneitem_t *> &items)
 {
 	sceneItems.clear();
+	captureTargets.clear();
 	sceneContentBoundsValid = false;
 	for (auto *item : items)
 		captureOriginal(item);
@@ -2548,6 +2708,8 @@ void ZoominatorController::captureOriginalSceneItems(const std::vector<obs_scene
 			sceneContentMax.y = std::max(sceneContentMax.y, maxY);
 		}
 	}
+
+	buildCaptureTargets();
 }
 
 void ZoominatorController::restoreOriginal(obs_sceneitem_t *item)
@@ -2957,6 +3119,7 @@ void ZoominatorController::onTick()
 	int cx = 0, cy = 0;
 	float sx = 0.0f, sy = 0.0f;
 	bool insideNow = false;
+	refreshCaptureTargets(QDateTime::currentMSecsSinceEpoch());
 	const bool mappedNow = getCursorPos(cx, cy) && mapCursorToScenePixels(cx, cy, sx, sy, insideNow);
 
 	if (debug) {
