@@ -26,25 +26,6 @@ if ( $PSVersionTable.PSVersion -lt '7.2.0' ) {
     exit 2
 }
 
-function Copy-DirectoryContents {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Source,
-        [Parameter(Mandatory = $true)]
-        [string] $Destination
-    )
-
-    if ( ! ( Test-Path -LiteralPath $Source ) ) {
-        return
-    }
-
-    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-
-    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
-    }
-}
-
 function Package {
     trap {
         Write-Error $_
@@ -67,10 +48,9 @@ function Package {
     $ProductVersion = $BuildSpec.version
 
     $OutputName = "${ProductName}-${ProductVersion}-windows-${Target}"
-    $InstallRoot = Resolve-Path -Path "${ProjectRoot}/release/${Configuration}"
+    $InstallRoot = Resolve-Path -Path "${ProjectRoot}/release/${Configuration}/${ProductName}"
     $StageRoot = "${ProjectRoot}/release/${OutputName}"
-    $PluginBinaryRoot = "${StageRoot}/obs-plugins/64bit"
-    $PluginDataRoot = "${StageRoot}/data/obs-plugins/${ProductName}"
+    $PluginStageRoot = "${StageRoot}/${ProductName}"
 
     $RemoveArgs = @{
         ErrorAction = 'SilentlyContinue'
@@ -82,106 +62,26 @@ function Package {
 
     Remove-Item @RemoveArgs -Recurse -Force
 
-    New-Item -ItemType Directory -Force -Path $PluginBinaryRoot | Out-Null
-    New-Item -ItemType Directory -Force -Path $PluginDataRoot | Out-Null
+    # OBS 33 plugin layout. The archive holds a single <plugin> folder that is
+    # extracted into %ProgramData%\obs-studio\plugins:
+    #   <plugin>\<plugin>.dll
+    #   <plugin>\data\locale\*.ini
+    $PluginDll = "${InstallRoot}/${ProductName}.dll"
+    $PluginData = "${InstallRoot}/data"
 
-    $DllCandidates = @(
-        "${InstallRoot}/obs-plugins/64bit/${ProductName}.dll",
-        "${InstallRoot}/obs-plugins/64bit/${ProductName}-plugin.dll",
-        "${InstallRoot}/bin/64bit/${ProductName}.dll",
-        "${InstallRoot}/bin/64bit/${ProductName}-plugin.dll",
-        "${InstallRoot}/${ProductName}.dll",
-        "${InstallRoot}/${ProductName}-plugin.dll"
-    )
-
-    $CopiedDll = $false
-
-    foreach ( $Candidate in $DllCandidates ) {
-        if ( Test-Path -LiteralPath $Candidate ) {
-            Copy-Item -LiteralPath $Candidate -Destination $PluginBinaryRoot -Force
-            $CopiedDll = $true
+    foreach ( $Required in @($PluginDll, "${PluginData}/locale/en-US.ini") ) {
+        if ( ! ( Test-Path -LiteralPath $Required ) ) {
+            throw "Missing required plugin file: ${Required}"
         }
     }
 
-    if ( ! $CopiedDll ) {
-        $FoundDlls = Get-ChildItem -LiteralPath $InstallRoot -Recurse -File -Filter '*.dll' |
-            Where-Object {
-                $_.Name -eq "${ProductName}.dll" -or
-                $_.Name -eq "${ProductName}-plugin.dll" -or
-                $_.DirectoryName -match 'obs-plugins|bin\\64bit|bin/64bit'
-            }
-
-        foreach ( $Dll in $FoundDlls ) {
-            Copy-Item -LiteralPath $Dll.FullName -Destination $PluginBinaryRoot -Force
-            $CopiedDll = $true
-        }
-    }
-
-    if ( ! $CopiedDll ) {
-        throw "Could not find the plugin DLL under ${InstallRoot}."
-    }
-
-    $CopiedData = $false
-
-    $ExactDataCandidates = @(
-        "${InstallRoot}/data/obs-plugins/${ProductName}",
-        "${InstallRoot}/data/${ProductName}"
-    )
-
-    foreach ( $Candidate in $ExactDataCandidates ) {
-        if ( Test-Path -LiteralPath $Candidate ) {
-            Copy-DirectoryContents -Source $Candidate -Destination $PluginDataRoot
-            $CopiedData = $true
-            break
-        }
-    }
-
-    if ( ! $CopiedData ) {
-        $ObsPluginsDataRoot = "${InstallRoot}/data/obs-plugins"
-        if ( Test-Path -LiteralPath $ObsPluginsDataRoot ) {
-            $DataFolders = Get-ChildItem -LiteralPath $ObsPluginsDataRoot -Directory -Force
-            if ( $DataFolders.Count -eq 1 ) {
-                Copy-DirectoryContents -Source $DataFolders[0].FullName -Destination $PluginDataRoot
-                $CopiedData = $true
-            } elseif ( Test-Path -LiteralPath "${ObsPluginsDataRoot}/${ProductName}" ) {
-                Copy-DirectoryContents -Source "${ObsPluginsDataRoot}/${ProductName}" -Destination $PluginDataRoot
-                $CopiedData = $true
-            }
-        }
-    }
-
-    if ( ! $CopiedData -and ( Test-Path -LiteralPath "${InstallRoot}/data" ) ) {
-        $TopLevelDataItems = Get-ChildItem -LiteralPath "${InstallRoot}/data" -Force |
-            Where-Object { $_.Name -ne 'obs-plugins' }
-
-        if ( $TopLevelDataItems.Count -gt 0 ) {
-            foreach ( $Item in $TopLevelDataItems ) {
-                Copy-Item -LiteralPath $Item.FullName -Destination $PluginDataRoot -Recurse -Force
-            }
-            $CopiedData = $true
-        }
-    }
-
-    if ( ! $CopiedData ) {
-        $KnownDataFolders = @('locale', 'locales', 'locale.ini', 'locales.ini', 'images', 'sounds')
-        foreach ( $Name in $KnownDataFolders ) {
-            $Matches = Get-ChildItem -LiteralPath $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -eq $Name }
-
-            foreach ( $Match in $Matches ) {
-                if ( $Match.PSIsContainer ) {
-                    Copy-Item -LiteralPath $Match.FullName -Destination $PluginDataRoot -Recurse -Force
-                } else {
-                    Copy-Item -LiteralPath $Match.FullName -Destination $PluginDataRoot -Force
-                }
-                $CopiedData = $true
-            }
-        }
-    }
+    New-Item -ItemType Directory -Force -Path $PluginStageRoot | Out-Null
+    Copy-Item -LiteralPath $PluginDll -Destination $PluginStageRoot -Force
+    Copy-Item -LiteralPath $PluginData -Destination $PluginStageRoot -Recurse -Force
 
     Log-Group "Archiving ${ProductName}..."
     $CompressArgs = @{
-        Path = (Get-ChildItem -LiteralPath $StageRoot)
+        Path = $PluginStageRoot
         CompressionLevel = 'Optimal'
         DestinationPath = "${ProjectRoot}/release/${OutputName}.zip"
         Verbose = ($Env:CI -ne $null)

@@ -236,7 +236,8 @@ jobs:
     name: Build for Ubuntu 🐧
     strategy:
       matrix:
-        os: [ubuntu-24.04]
+        # OBS 33 is built for and packaged on Ubuntu 26.04.
+        os: [ubuntu-26.04]
     runs-on: ${{ matrix.os }}
     needs: check-event
     defaults:
@@ -279,8 +280,6 @@ jobs:
             libgl1-mesa-dev \
             libgles2-mesa-dev \
             libsimde-dev \
-            libobs-dev \
-            obs-studio \
             qt6-base-dev \
             qt6-base-dev-tools \
             libqt6svg6-dev \
@@ -310,7 +309,7 @@ jobs:
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-ubuntu-24.04-x86_64-${{ needs.check-event.outputs.commitHash }}
+          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-${{ matrix.os }}-x86_64-${{ needs.check-event.outputs.commitHash }}
           path: |
             ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-ubuntu-gnu.tar.xz
             ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu.deb
@@ -326,8 +325,8 @@ jobs:
 
   windows-build:
     name: Build for Windows 🪟
-    # OBS 33 builds with Visual Studio 2026 and the 10.0.26100 SDK; windows-2025 ships both.
-    runs-on: windows-2025
+    # OBS 33 builds with Visual Studio 2026 and the 10.0.26100 SDK; this image ships both.
+    runs-on: windows-2025-vs2026
     needs: check-event
     defaults:
       run:

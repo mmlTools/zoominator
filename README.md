@@ -46,43 +46,62 @@ It operates at the **scene level**, meaning it works with any source automatical
 > need OBS 33.0 or later. On OBS 31 / 32 keep using
 > [Zoominator 2.0.6](https://github.com/mmlTools/zoominator/releases/tag/2.0.6).
 
+OBS 33 changed where third-party plugins live. The locations below are the ones OBS 33
+supports; plugins in the old locations are marked **Legacy** in OBS's plugin manager.
+
 ### Windows
 
-1. Download the latest release.
-2. Extract the archive.
-3. Copy the **contents of the extracted archive** to your OBS Studio installation directory, preserving the directory structure.
-
-   The release package contains both the plugin binary and required localization files. Do **not** copy only `zoominator.dll`.
-
+1. Download the latest `zoominator-<version>-windows-x64.zip` release.
+2. Extract the archive into `C:\ProgramData\obs-studio\plugins\`, so you end up with:
+   ```
+   C:\ProgramData\obs-studio\plugins\zoominator\zoominator.dll
+   C:\ProgramData\obs-studio\plugins\zoominator\data\locale\
+   ```
+   For a portable OBS, use `<OBS folder>\plugins\` instead.
+3. If you are upgrading from an older Zoominator, delete the old files from your OBS folder:
+   `obs-plugins\64bit\zoominator.dll` and `data\obs-plugins\zoominator\`.
 4. Restart OBS.
 
 > **Troubleshooting:** If Zoominator appears in the OBS `Tools` menu as `Menu.Tools.Zoominator` instead of `Zoominator`, the required localization files may not have been installed. Reinstall the plugin using the complete release archive.
 
 ### macOS
-1. Download the `.pkg` or `.dmg` from releases
+1. Download the `.pkg` from releases
 2. Install and restart OBS
 
+The installer places the plugin in
+`~/Library/Application Support/obs-studio/plugins/zoominator.plugin`.
+
 ### Linux (X11)
-1. Build from source or install via package (if available)
-2. Copy plugin files into:
-   ```
-   ~/.config/obs-studio/plugins/
-   ```
-3. Restart OBS
+On Ubuntu 26.04, install the `.deb` from releases. It places the plugin in
+`/usr/lib/x86_64-linux-gnu/obs-modules/plugins/` and its data in
+`/usr/share/obs/obs-modules/plugins/zoominator/`, which is where OBS from the
+[OBS PPA](https://launchpad.net/~obsproject/+archive/ubuntu/obs-studio) looks.
+
+If you use the `.deb` from the OBS releases page (it installs under `/usr/local`), or want to
+install for a single user, copy the files to:
+```
+~/.local/share/obs-studio/plugins/zoominator/zoominator.so
+~/.local/share/obs-studio/plugins/zoominator/data/locale/
+```
+Then restart OBS. If you are upgrading, remove any old copy from
+`~/.config/obs-studio/plugins/`.
 
 ---
 
 ## Build from Source
 
 The build follows the official OBS plugin template: `buildspec.json` pins the OBS
-sources and the pre-built dependencies (currently OBS 33.0.0 and obs-deps
+sources and the pre-built dependencies (currently OBS 33.0.1 and obs-deps
 2026-10-23), and CMake downloads and verifies them on first configure.
 
 ### Requirements
 - CMake 3.28 or newer
 - **Windows:** Visual Studio 2026 with the Windows 11 SDK 10.0.26100
 - **macOS:** Xcode 26.5 or newer (macOS 13.0 deployment target, universal binary)
-- **Linux:** `libobs-dev`, Qt 6 development packages, X11 / Xrandr / XInput2 headers
+- **Linux:** Ubuntu 26.04 with `obs-studio` 33 from the
+  [OBS PPA](https://launchpad.net/~obsproject/+archive/ubuntu/obs-studio) (it includes the
+  libobs development files, so do not install Ubuntu's `libobs-dev`), Qt 6 development
+  packages, X11 / Xrandr / XInput2 headers
 
 ### Steps
 ```bash
@@ -102,9 +121,11 @@ cmake --preset ubuntu-x86_64
 cmake --build --preset ubuntu-x86_64
 ```
 
-The built plugin and its `data/` folder land in `build_<arch>/rundir/<config>/`.
-Copy `zoominator.dll` to `<OBS>/obs-plugins/64bit/` and the `zoominator` data folder
-to `<OBS>/data/obs-plugins/` to test it locally.
+The built plugin lands in `build_<arch>/rundir/<config>/zoominator/` in the OBS 33 layout
+(on macOS, `build_macos/rundir/<config>/zoominator.plugin`). To test it locally, set
+`OBS_PLUGINS_PATH` to the `rundir/<config>` folder before starting OBS, or copy the
+`zoominator` folder into `C:\ProgramData\obs-studio\plugins\` (Windows) or
+`~/.local/share/obs-studio/plugins/` (Linux).
 
 ### Releasing (maintainers)
 
