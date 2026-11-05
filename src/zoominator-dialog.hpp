@@ -85,6 +85,7 @@ private:
 	QSpinBox *spEdgeOverflowMargin = nullptr;
 	QSpinBox *spMouseIdleTimeout = nullptr;
 	QCheckBox *chkPortraitCover = nullptr;
+	QCheckBox *chkZoomWithinItemBounds = nullptr;
 	QCheckBox *chkShowCursorMarker = nullptr;
 	QCheckBox *chkShowMarkerWhenNotZoomed = nullptr;
 	QSpinBox *spMarkerSize = nullptr;
