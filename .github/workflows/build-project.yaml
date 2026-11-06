@@ -263,6 +263,14 @@ jobs:
 
       - name: Install Ubuntu build dependencies
         run: |
+          # Prefer the official Ubuntu mirror; the Azure mirror can be very slow.
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            printf '%s\tpriority:%s\n' \
+              'https://archive.ubuntu.com/ubuntu/' 1 \
+              'https://security.ubuntu.com/ubuntu/' 2 \
+              'http://azure.archive.ubuntu.com/ubuntu/' 3 \
+              | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+          fi
           for attempt in 1 2 3; do
             sudo apt-get update && break
             sleep $(( attempt * 10 ))
