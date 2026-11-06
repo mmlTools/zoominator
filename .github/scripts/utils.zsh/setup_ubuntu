@@ -85,6 +85,14 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
       return 2
     }
 
+    # Ubuntu's amd64v3 variant can select an empty PPA index. OBS publishes amd64.
+    if [[ ${target##*-} == x86_64 ]] {
+      local ppa_source
+      for ppa_source in /etc/apt/sources.list.d/*obsproject*obs-studio*.sources(N); do
+        sudo sed -i '/^Architectures:/d; /^Components:/a Architectures: amd64' ${ppa_source}
+      done
+    }
+
     apt_updated=0
     for attempt in {1..3}; do
       if sudo apt-get update; then
