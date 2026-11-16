@@ -39,6 +39,7 @@
 
 #include "zoominator-dialog.hpp"
 #include "box-zoom.hpp"
+#include "edge-zone.hpp"
 
 #ifdef __linux__
 #include <X11/Xlib.h>
@@ -189,6 +190,10 @@ static inline void rotation_sin_cos(float degrees, float &sinOut, float &cosOut)
  * enough here that even an 8K source stays under a hundredth of a pixel. */
 static constexpr float kScaleEpsilon = 1.0e-5f;
 static constexpr double kWheelZoomSmoothingRate = 14.0;
+/* Below this zoom the view is practically the whole frame: there is nothing
+ * for an edge zone to hold still, and the focal point that would produce a
+ * given view centre runs off to infinity as the zoom approaches 1. */
+static constexpr double kEdgeZoneMinZoom = 1.01;
 
 static inline void logi(bool enabled, const char *fmt, ...)
 {
@@ -696,6 +701,7 @@ void ZoominatorController::loadSettings()
 	followSpeed = 8.0;
 	centerCursorUntilEdge = true;
 	edgeOverflowMarginPct = 0;
+	followEdgeZonePct = 0;
 	mouseIdleTimeoutMs = 0;
 	portraitCover = true;
 	zoomWithinItemBounds = false;
@@ -883,6 +889,9 @@ void ZoominatorController::loadSettings()
 	else if (obs_data_has_user_value(data, "allow_canvas_overflow"))
 		edgeOverflowMarginPct = obs_data_get_bool(data, "allow_canvas_overflow") ? 50 : 0;
 	edgeOverflowMarginPct = std::clamp(edgeOverflowMarginPct, 0, 50);
+	if (obs_data_has_user_value(data, "follow_edge_zone_pct"))
+		followEdgeZonePct = (int)obs_data_get_int(data, "follow_edge_zone_pct");
+	followEdgeZonePct = std::clamp(followEdgeZonePct, 0, kFollowEdgeZoneMaxPct);
 	if (obs_data_has_user_value(data, "mouse_idle_timeout_ms"))
 		mouseIdleTimeoutMs = (int)obs_data_get_int(data, "mouse_idle_timeout_ms");
 	mouseIdleTimeoutMs = std::clamp(mouseIdleTimeoutMs, 0, 60000);
@@ -984,6 +993,7 @@ void ZoominatorController::saveSettings()
 	obs_data_set_bool(data, "center_cursor_until_edge", centerCursorUntilEdge);
 	obs_data_set_int(data, "edge_overflow_margin_pct", edgeOverflowMarginPct);
 	obs_data_set_bool(data, "allow_canvas_overflow", edgeOverflowMarginPct > 0);
+	obs_data_set_int(data, "follow_edge_zone_pct", followEdgeZonePct);
 	obs_data_set_int(data, "mouse_idle_timeout_ms", mouseIdleTimeoutMs);
 	obs_data_set_bool(data, "portrait_cover", portraitCover);
 	obs_data_set_bool(data, "zoom_within_item_bounds", zoomWithinItemBounds);
@@ -1074,6 +1084,7 @@ void ZoominatorController::resetState()
 	renderedZoomFactor = 1.0;
 	animDir.store(0, std::memory_order_relaxed);
 	followHasPos = false;
+	edgeZoneHasPos = false;
 	lastCursorSampleValid = false;
 	lastCursorMovementMs = 0;
 	mouseTrackingIdle = false;
@@ -2817,19 +2828,28 @@ void ZoominatorController::applyZoomToScene(double t)
 				followX = mx;
 				followY = my;
 				followHasPos = true;
-			} else {
-				const double dx = (double)mx - (double)followX;
-				const double dy = (double)my - (double)followY;
-				const double dist = std::sqrt(dx * dx + dy * dy);
+				edgeZoneHasPos = false;
+			}
 
-				const double effectiveSpeed = clampd(followSpeed, 0.25, 30.0);
-				if (dist > 0.01) {
-					const double response =
-						1.0 - std::exp(-(2.0 + effectiveSpeed * 1.35) * tickDeltaSeconds);
-					const double step = clampd(response, 0.01, 0.92);
-					followX = (float)((double)followX + dx * step);
-					followY = (float)((double)followY + dy * step);
-				}
+			/* The easing heads for the cursor, or with an edge zone for the
+			 * view that keeps the cursor inside its inner rectangle. On the
+			 * first frame the two coincide, so the zoom still starts on the
+			 * cursor without easing in from somewhere else. */
+			double goalX = mx;
+			double goalY = my;
+			followEdgeZoneGoal(mx, my, zTarget, cw, ch, isLiveItem, goalX, goalY);
+
+			const double dx = goalX - (double)followX;
+			const double dy = goalY - (double)followY;
+			const double dist = std::sqrt(dx * dx + dy * dy);
+
+			const double effectiveSpeed = clampd(followSpeed, 0.25, 30.0);
+			if (dist > 0.01) {
+				const double response =
+					1.0 - std::exp(-(2.0 + effectiveSpeed * 1.35) * tickDeltaSeconds);
+				const double step = clampd(response, 0.01, 0.92);
+				followX = (float)((double)followX + dx * step);
+				followY = (float)((double)followY + dy * step);
 			}
 			fx = followX;
 			fy = followY;
@@ -3005,6 +3025,126 @@ void ZoominatorController::applyZoomToScene(double t)
 		pendingMarkerX = (double)anchorX + ((double)markerSceneX - (double)fx) * z + offsetX;
 		pendingMarkerY = (double)anchorY + ((double)markerSceneY - (double)fy) * z + offsetY;
 	}
+}
+
+/* Where the follow easing should head for. Without an edge zone that is the
+ * cursor itself. With one, the view holds still while the cursor is inside its
+ * inner rectangle and gives way by just the overshoot once the cursor reaches
+ * the outer band (see edge-zone.hpp); the easing itself is unchanged. Where
+ * the view may not go any further - the edge of the capture - is still decided
+ * by the zoom paths, exactly as without a zone. Runs on the graphics tick. */
+void ZoominatorController::followEdgeZoneGoal(double cursorX, double cursorY, double zoom, double canvasW,
+					      double canvasH, const std::function<bool(obs_sceneitem_t *)> &isLiveItem,
+					      double &goalX, double &goalY)
+{
+	goalX = cursorX;
+	goalY = cursorY;
+
+	const double zone = (double)std::clamp(followEdgeZonePct, 0, kFollowEdgeZoneMaxPct) / 100.0;
+	const bool boxZoom = zoomWithinItemBounds;
+	const bool canvasOverflow = !boxZoom && edgeOverflowMarginPct > 0;
+	/* Box zoom and the overflowing canvas zoom centre the view on the focal
+	 * point. The plain canvas zoom scales about it instead, so there the focal
+	 * point and the view centre are two different things. */
+	const bool focalIsCenter = boxZoom || canvasOverflow;
+	/* Only the overflowing canvas zoom still pans at 1x. */
+	if (zone <= 0.0 || (zoom < kEdgeZoneMinZoom && !canvasOverflow)) {
+		edgeZoneHasPos = false;
+		return;
+	}
+
+	/* Size of the zoomed view and the axes it is measured along: the canvas,
+	 * or for box zoom the frame of the item under the cursor, which may be
+	 * rotated. */
+	double viewW = canvasW / zoom;
+	double viewH = canvasH / zoom;
+	double sn = 0.0, cs = 1.0;
+	if (boxZoom) {
+		bool found = false;
+		double bestDist = 0.0;
+		for (const auto &state : sceneItems) {
+			if (!state.item || !state.orig.valid || !isLiveItem(state.item) ||
+			    !obs_sceneitem_visible(state.item))
+				continue;
+			obs_source_t *src = obs_sceneitem_get_source(state.item);
+			if (!src)
+				continue;
+
+			const double visW = (double)obs_source_get_width(src) - (double)state.orig.crop.left -
+					    (double)state.orig.crop.right;
+			const double visH = (double)obs_source_get_height(src) - (double)state.orig.crop.top -
+					    (double)state.orig.crop.bottom;
+			const double frameW = visW * (double)state.orig.effectiveScale.x;
+			const double frameH = visH * (double)state.orig.effectiveScale.y;
+			if (visW <= 0.0 || visH <= 0.0 || std::fabs(frameW) < 1.0 || std::fabs(frameH) < 1.0)
+				continue;
+
+			float itemSin = 0.0f, itemCos = 1.0f;
+			rotation_sin_cos(state.orig.rot, itemSin, itemCos);
+			const double dx = cursorX - (double)state.orig.effectivePos.x;
+			const double dy = cursorY - (double)state.orig.effectivePos.y;
+			const double lx = dx * itemCos + dy * itemSin;
+			const double ly = -dx * itemSin + dy * itemCos;
+			const double x0 = std::min(0.0, frameW), x1 = std::max(0.0, frameW);
+			const double y0 = std::min(0.0, frameH), y1 = std::max(0.0, frameH);
+			const double outX = lx < x0 ? x0 - lx : (lx > x1 ? lx - x1 : 0.0);
+			const double outY = ly < y0 ? y0 - ly : (ly > y1 ? ly - y1 : 0.0);
+			const double dist = outX * outX + outY * outY;
+
+			/* Topmost item under the cursor, otherwise the nearest one: the
+			 * rule capture_pick() applies when mapping the cursor. */
+			if (found && !(dist < bestDist || (dist == 0.0 && bestDist == 0.0)))
+				continue;
+			found = true;
+			bestDist = dist;
+			viewW = (x1 - x0) / zoom;
+			viewH = (y1 - y0) / zoom;
+			sn = itemSin;
+			cs = itemCos;
+		}
+		if (!found) {
+			edgeZoneHasPos = false;
+			return;
+		}
+	}
+
+	using zoominator::edge_zone_center;
+	using zoominator::edge_zone_rezoom;
+	using zoominator::focal_to_view_center;
+	using zoominator::view_center_to_focal;
+
+	if (!edgeZoneHasPos) {
+		/* Start from the view as it is now, so the zone never makes it jump. */
+		edgeZoneX = focalIsCenter ? (double)followX : focal_to_view_center(followX, canvasW, zoom);
+		edgeZoneY = focalIsCenter ? (double)followY : focal_to_view_center(followY, canvasH, zoom);
+		edgeZoneZoom = zoom;
+		edgeZoneHasPos = true;
+	} else if (zoom != edgeZoneZoom) {
+		/* The zoom level moved (wheel zoom, or the ramp at the start of a
+		 * zoom): keep zooming about the cursor, as follow does without a zone.
+		 * The eased position is carried along with its goal so the view does
+		 * not trail behind the zoom. */
+		double viewX = focalIsCenter ? (double)followX : focal_to_view_center(followX, canvasW, edgeZoneZoom);
+		double viewY = focalIsCenter ? (double)followY : focal_to_view_center(followY, canvasH, edgeZoneZoom);
+		viewX = edge_zone_rezoom(viewX, cursorX, edgeZoneZoom, zoom);
+		viewY = edge_zone_rezoom(viewY, cursorY, edgeZoneZoom, zoom);
+		followX = (float)(focalIsCenter ? viewX : view_center_to_focal(viewX, canvasW, zoom));
+		followY = (float)(focalIsCenter ? viewY : view_center_to_focal(viewY, canvasH, zoom));
+		edgeZoneX = edge_zone_rezoom(edgeZoneX, cursorX, edgeZoneZoom, zoom);
+		edgeZoneY = edge_zone_rezoom(edgeZoneY, cursorY, edgeZoneZoom, zoom);
+		edgeZoneZoom = zoom;
+	}
+
+	/* Offset of the view centre from the cursor, along the view's own axes. */
+	const double dx = edgeZoneX - cursorX;
+	const double dy = edgeZoneY - cursorY;
+	const double lx = edge_zone_center(dx * cs + dy * sn, 0.0, viewW, zone);
+	const double ly = edge_zone_center(-dx * sn + dy * cs, 0.0, viewH, zone);
+	edgeZoneX = cursorX + lx * cs - ly * sn;
+	edgeZoneY = cursorY + lx * sn + ly * cs;
+
+	goalX = focalIsCenter ? edgeZoneX : view_center_to_focal(edgeZoneX, canvasW, zoom);
+	goalY = focalIsCenter ? edgeZoneY : view_center_to_focal(edgeZoneY, canvasH, zoom);
 }
 
 /* Zooms each item inside its own frame: position, alignment and bounds stay
@@ -3213,12 +3353,12 @@ void ZoominatorController::onTick()
 			obs_video_info ovi{};
 			const bool haveVi = obs_get_video_info(&ovi);
 			blog(LOG_INFO,
-			     "[Zoominator] diag: cursor=(%d,%d) rect=%s(%d,%d %dx%d) mapped=%d inside=%d canvasPt=(%.1f,%.1f) canvas=%ux%u bounds=%s(%.0f,%.0f)-(%.0f,%.0f) centerUntilEdge=%d overflow=%d%% zoom=%.2f items=%zu",
+			     "[Zoominator] diag: cursor=(%d,%d) rect=%s(%d,%d %dx%d) mapped=%d inside=%d canvasPt=(%.1f,%.1f) canvas=%ux%u bounds=%s(%.0f,%.0f)-(%.0f,%.0f) centerUntilEdge=%d overflow=%d%% edgeZone=%d%% zoom=%.2f items=%zu",
 			     cx, cy, haveRect ? "" : "NONE", rx, ry, rw, rh, (int)mappedNow, (int)insideNow, sx, sy,
 			     haveVi ? ovi.base_width : 0u, haveVi ? ovi.base_height : 0u,
 			     sceneContentBoundsValid ? "" : "canvas", sceneContentMin.x, sceneContentMin.y,
 			     sceneContentMax.x, sceneContentMax.y, (int)centerCursorUntilEdge, edgeOverflowMarginPct,
-			     zoomFactor, sceneItems.size());
+			     followEdgeZonePct, zoomFactor, sceneItems.size());
 		}
 	}
 

@@ -1,0 +1,34 @@
+{
+    "id": "com.obsproject.Studio.Plugin.Zoominator",
+    "branch": "stable",
+    "runtime": "com.obsproject.Studio",
+    "runtime-version": "stable",
+    "sdk": "org.freedesktop.Sdk//26.08",
+    "build-extension": true,
+    "separate-locales": false,
+    "build-options": {
+        "prefix": "/app/plugins/Zoominator"
+    },
+    "modules": [
+        {
+            "name": "zoominator",
+            "buildsystem": "cmake-ninja",
+            "builddir": true,
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_INSTALL_LIBDIR=lib",
+                "-DENABLE_FRONTEND_API=ON",
+                "-DENABLE_QT=ON"
+            ],
+            "post-install": [
+                "install -Dm644 -t ${FLATPAK_DEST}/share/metainfo ${FLATPAK_BUILDER_BUILDDIR}/build-aux/flatpak/${FLATPAK_ID}.metainfo.xml"
+            ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "../../"
+                }
+            ]
+        }
+    ]
+}

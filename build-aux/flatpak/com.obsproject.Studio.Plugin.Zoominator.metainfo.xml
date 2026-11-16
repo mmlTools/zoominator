@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="addon">
+  <id>com.obsproject.Studio.Plugin.Zoominator</id>
+  <extends>com.obsproject.Studio</extends>
+  <name>Zoominator</name>
+  <summary>Zoom and pan the whole scene to follow the mouse</summary>
+  <developer id="com.streamrsc">
+    <name>MML Tech</name>
+  </developer>
+  <url type="homepage">https://github.com/mmlTools/zoominator</url>
+  <url type="bugtracker">https://github.com/mmlTools/zoominator/issues</url>
+  <url type="vcs-browser">https://github.com/mmlTools/zoominator</url>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-only</project_license>
+  <description>
+    <p>
+      Zoominator zooms and pans the entire scene to follow the mouse, on a hotkey or a mouse
+      button, so the focus stays where the action is. It works at scene level: no per-source
+      setup and no dock.
+    </p>
+    <p>
+      Global input and cursor tracking use XInput2, so the plugin needs OBS Studio running in
+      an X11 session. In a native Wayland session its triggers and mouse tracking are
+      unavailable.
+    </p>
+  </description>
+  <releases>
+    <release version="2.3.0" date="2026-11-16"/>
+    <release version="2.2.0" date="2026-11-06"/>
+  </releases>
+</component>

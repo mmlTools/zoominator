@@ -49,6 +49,10 @@ public:
 		CursorFollow,
 	};
 
+	/* Upper limit of followEdgeZonePct. At 50 % the inner rectangle would be
+	 * empty and the view would move with every cursor movement again. */
+	static constexpr int kFollowEdgeZoneMaxPct = 45;
+
 	static QString zoomAnchorModeToString(ZoomAnchorMode mode);
 	static ZoomAnchorMode zoomAnchorModeFromString(const QString &value);
 
@@ -94,6 +98,9 @@ public:
 	double followSpeed = 8.0;
 	bool centerCursorUntilEdge = true;
 	int edgeOverflowMarginPct = 0;
+	/* Outer share of the zoomed view, per side, that makes it pan in follow
+	 * mode. 0 follows every cursor movement. */
+	int followEdgeZonePct = 0;
 	int mouseIdleTimeoutMs = 0;
 	bool portraitCover = true;
 	bool zoomWithinItemBounds = false;
@@ -165,6 +172,8 @@ private:
 	bool isMarkerFlashActive(qint64 nowMs) const;
 	int currentMarkerOpacity(qint64 nowMs);
 	void applyZoomToScene(double t);
+	void followEdgeZoneGoal(double cursorX, double cursorY, double zoom, double canvasW, double canvasH,
+				const std::function<bool(obs_sceneitem_t *)> &isLiveItem, double &goalX, double &goalY);
 	void applyZoomWithinItemBounds(double z, float fx, float fy, float markerSceneX, float markerSceneY,
 				       bool markerHasPoint, const std::function<bool(obs_sceneitem_t *)> &isLiveItem);
 
@@ -218,6 +227,12 @@ private:
 	bool followHasPos = false;
 	float followX = 0.0f;
 	float followY = 0.0f;
+	/* Edge zone: centre of the view the follow easing is heading for, in scene
+	 * coordinates, and the zoom level it was last worked out at. */
+	bool edgeZoneHasPos = false;
+	double edgeZoneX = 0.0;
+	double edgeZoneY = 0.0;
+	double edgeZoneZoom = 1.0;
 	bool lastCursorSampleValid = false;
 	float lastCursorSampleX = 0.0f;
 	float lastCursorSampleY = 0.0f;

@@ -125,14 +125,6 @@ static void addSection(QVBoxLayout *lay, const QString &title, bool firstSection
 	lay->addSpacing(10);
 }
 
-static void frontend_event_cb(enum obs_frontend_event, void *data)
-{
-	auto *dlg = static_cast<ZoominatorDialog *>(data);
-	if (!dlg)
-		return;
-	QMetaObject::invokeMethod(dlg, "refreshLists", Qt::QueuedConnection);
-}
-
 static QString friendlySourceKind(const QString &kind)
 {
 	if (kind == "image_source")
@@ -186,28 +178,65 @@ ZoominatorDialog::ZoominatorDialog(QWidget *parent) : QDialog(parent)
 	}
 	resize(width, height);
 
-	obs_frontend_add_event_callback(frontend_event_cb, this);
+	obs_frontend_add_event_callback(&ZoominatorDialog::obsFrontendEvent, this);
 
 	auto *sh = obs_get_signal_handler();
 	signal_handler_connect(sh, "source_create", &ZoominatorDialog::obsSourceChanged, this);
 	signal_handler_connect(sh, "source_destroy", &ZoominatorDialog::obsSourceChanged, this);
 	signal_handler_connect(sh, "source_rename", &ZoominatorDialog::obsSourceChanged, this);
+	obsCallbacksAttached = true;
 
 	refreshLists();
 	loadFromController();
 }
 
-void ZoominatorDialog::closeEvent(QCloseEvent *event)
+ZoominatorDialog::~ZoominatorDialog()
 {
-	obs_frontend_remove_event_callback(frontend_event_cb, this);
+	detachObsCallbacks();
+}
 
+/* Called from the destructor rather than closeEvent(): since Qt 6.3 a QDialog
+ * closed through done() / reject() (Esc, for one) is closed and, with
+ * WA_DeleteOnClose, deleted without ever receiving a QCloseEvent. Unhooking
+ * only in closeEvent() left OBS holding callbacks to a deleted dialog, which
+ * crashed on the next frontend event or source change. */
+void ZoominatorDialog::detachObsCallbacks()
+{
+	if (!obsCallbacksAttached)
+		return;
+	obsCallbacksAttached = false;
+
+	obs_frontend_remove_event_callback(&ZoominatorDialog::obsFrontendEvent, this);
+
+	if (!obs_initialized())
+		return;
 	auto *sh = obs_get_signal_handler();
 	signal_handler_disconnect(sh, "source_create", &ZoominatorDialog::obsSourceChanged, this);
 	signal_handler_disconnect(sh, "source_destroy", &ZoominatorDialog::obsSourceChanged, this);
 	signal_handler_disconnect(sh, "source_rename", &ZoominatorDialog::obsSourceChanged, this);
+}
 
+void ZoominatorDialog::closeEvent(QCloseEvent *event)
+{
 	applyToController();
 	QDialog::closeEvent(event);
+}
+
+void ZoominatorDialog::obsFrontendEvent(enum obs_frontend_event event, void *data)
+{
+	auto *dlg = static_cast<ZoominatorDialog *>(data);
+	if (!dlg)
+		return;
+
+	/* OBS tears the frontend API down right after this event, while the dialog
+	 * (a child of the main window) is destroyed later. Let go now, while the
+	 * API is still there to unregister from. */
+	if (event == OBS_FRONTEND_EVENT_EXIT) {
+		dlg->detachObsCallbacks();
+		return;
+	}
+
+	QMetaObject::invokeMethod(dlg, "refreshLists", Qt::QueuedConnection);
 }
 
 void ZoominatorDialog::obsSourceChanged(void *data, struct calldata *)
@@ -481,6 +510,13 @@ void ZoominatorDialog::buildUi()
 		spEdgeOverflowMargin->setSpecialValueText(T("Dialog.EdgeOverflow.Disabled"));
 		spEdgeOverflowMargin->setToolTip(T("Dialog.EdgeOverflowMarginTooltip"));
 
+		spFollowEdgeZone = new QSpinBox(page);
+		spFollowEdgeZone->setRange(0, ZoominatorController::kFollowEdgeZoneMaxPct);
+		spFollowEdgeZone->setSingleStep(5);
+		spFollowEdgeZone->setSuffix(T("Unit.Percent"));
+		spFollowEdgeZone->setSpecialValueText(T("Dialog.FollowEdgeZone.Disabled"));
+		spFollowEdgeZone->setToolTip(T("Dialog.FollowEdgeZoneTooltip"));
+
 		spMouseIdleTimeout = new QSpinBox(page);
 		spMouseIdleTimeout->setRange(0, 60000);
 		spMouseIdleTimeout->setSingleStep(100);
@@ -499,16 +535,18 @@ void ZoominatorDialog::buildUi()
 		auto *overflowRow = new QHBoxLayout;
 		overflowRow->setSpacing(12);
 		overflowRow->addWidget(mkField(T("Dialog.EdgeOverflowMargin"), spEdgeOverflowMargin), 1);
-		overflowRow->addStretch(2);
+		overflowRow->addWidget(mkField(T("Dialog.FollowEdgeZone"), spFollowEdgeZone), 1);
+		overflowRow->addStretch(1);
 		lay->addLayout(overflowRow);
 
 		lay->addWidget(chkCenterCursorUntilEdge);
 
-		/* Smoothing and the idle freeze only mean something while the anchor
-		 * actually tracks the cursor. */
+		/* Smoothing, the edge zone and the idle freeze only mean something
+		 * while the anchor actually tracks the cursor. */
 		auto syncFollowOnlyFields = [this]() {
 			const bool follows = (cmbZoomAnchor->currentData().toString() == "cursor_follow");
 			spFollowSpeed->setEnabled(follows);
+			spFollowEdgeZone->setEnabled(follows);
 			spMouseIdleTimeout->setEnabled(follows);
 		};
 		connect(cmbZoomAnchor, &QComboBox::currentIndexChanged, this,
@@ -912,6 +950,7 @@ void ZoominatorDialog::loadFromController()
 		spFollowSpeed->setValue(c.followSpeed);
 		chkCenterCursorUntilEdge->setChecked(c.centerCursorUntilEdge);
 		spEdgeOverflowMargin->setValue(c.edgeOverflowMarginPct);
+		spFollowEdgeZone->setValue(c.followEdgeZonePct);
 		spMouseIdleTimeout->setValue(c.mouseIdleTimeoutMs);
 		chkPortraitCover->setChecked(c.portraitCover);
 		chkZoomWithinItemBounds->setChecked(c.zoomWithinItemBounds);
@@ -971,6 +1010,7 @@ void ZoominatorDialog::applyToController()
 	c.followSpeed = spFollowSpeed->value();
 	c.centerCursorUntilEdge = chkCenterCursorUntilEdge->isChecked();
 	c.edgeOverflowMarginPct = spEdgeOverflowMargin->value();
+	c.followEdgeZonePct = spFollowEdgeZone->value();
 	c.mouseIdleTimeoutMs = spMouseIdleTimeout->value();
 	c.portraitCover = chkPortraitCover->isChecked();
 	c.zoomWithinItemBounds = chkZoomWithinItemBounds->isChecked();

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <obs-frontend-api.h>
+
 #include <QDialog>
 
 class QCheckBox;
@@ -20,6 +22,7 @@ class ZoominatorDialog final : public QDialog {
 
 public:
 	explicit ZoominatorDialog(QWidget *parent = nullptr);
+	~ZoominatorDialog() override;
 
 protected:
 	void closeEvent(QCloseEvent *event) override;
@@ -41,7 +44,12 @@ private:
 	void populateSources();
 	void updateMarkerColorButton(const QColor &color);
 
+	static void obsFrontendEvent(enum obs_frontend_event event, void *data);
 	static void obsSourceChanged(void *data, struct calldata *cd);
+	void detachObsCallbacks();
+
+	/* True while the callbacks above are registered with `this`. */
+	bool obsCallbacksAttached = false;
 
 	/* Dock-style panel: header strip (tabs), content (pages), footer strip (status + buttons). */
 	QFrame *panelHeader = nullptr;
@@ -83,6 +91,7 @@ private:
 	QDoubleSpinBox *spFollowSpeed = nullptr;
 	QCheckBox *chkCenterCursorUntilEdge = nullptr;
 	QSpinBox *spEdgeOverflowMargin = nullptr;
+	QSpinBox *spFollowEdgeZone = nullptr;
 	QSpinBox *spMouseIdleTimeout = nullptr;
 	QCheckBox *chkPortraitCover = nullptr;
 	QCheckBox *chkZoomWithinItemBounds = nullptr;

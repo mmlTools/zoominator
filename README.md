@@ -23,6 +23,10 @@ It operates at the **scene level**, meaning it works with any source automatical
 - **Ultrawide Edge Tracking**
   Optionally keeps the cursor centered until the captured scene reaches an edge.
 
+- **Follow Edge Zone**
+  Optionally holds the zoomed view still while the cursor stays in its middle, and
+  pans only when the cursor reaches the outer part of the view (a camera dead zone).
+
 - **Idle Freeze**
   Pauses mouse following after a configurable idle timeout and resumes on movement.
 
@@ -85,6 +89,18 @@ install for a single user, copy the files to:
 ```
 Then restart OBS. If you are upgrading, remove any old copy from
 `~/.config/obs-studio/plugins/`.
+
+### Linux (Flatpak, X11)
+For OBS Studio installed from Flathub, Zoominator can be built as a plugin extension of
+the OBS Flatpak. It is not published on Flathub yet, so build it with `flatpak-builder`:
+```bash
+git clone https://github.com/mmlTools/zoominator.git
+cd zoominator
+flatpak-builder --user --install --install-deps-from=flathub --force-clean \
+  build_flatpak build-aux/flatpak/com.obsproject.Studio.Plugin.Zoominator.json
+```
+Then restart OBS. OBS has to run in an X11 session, as with the other Linux packages; see
+[build-aux/flatpak](build-aux/flatpak/README.md) for details.
 
 ---
 
